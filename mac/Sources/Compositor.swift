@@ -386,19 +386,30 @@ final class Compositor {
         win.simdScale = SIMD3(repeating: s)
     }
 
-    // MARK: open animation: a new window rises from just below and fades in; opening the menu lifts the dock too
-    private var popStart: CFTimeInterval = 0, popDock = false
+    // MARK: open/close motion (Quest Universal Menu): a quick fade with a tiny settle, no flying across the room
+    private var popStart: CFTimeInterval = 0, popDock = false, closeStart: CFTimeInterval = 0, shown = true
     func pop(dock: Bool) { popStart = CACurrentMediaTime(); popDock = dock }
+    /// Show/hide the whole shell; hiding fades it out quickly (inverse of opening) before it disappears.
+    func setDashVisible(_ on: Bool) {
+        if on { shown = true; dash.isHidden = false; dash.opacity = 1 }
+        else if shown { shown = false; closeStart = CACurrentMediaTime() }
+    }
     private func animate() {
-        let t = Float(min(1, (CACurrentMediaTime() - popStart) / 0.32)), e = 1 - pow(1 - t, 3)   // ease-out cubic
-        winContent.simdPosition = SIMD3(0, -0.14 * (1 - e), 0)
-        winContent.simdScale = SIMD3(repeating: 0.9 + 0.1 * e)
+        let t = Float(min(1, (CACurrentMediaTime() - popStart) / 0.16)), e = 1 - pow(1 - t, 3)   // ease-out cubic, 160 ms
+        winContent.simdPosition = SIMD3(0, -0.025 * (1 - e), 0)
+        winContent.simdScale = SIMD3(repeating: 0.97 + 0.03 * e)
         winContent.opacity = CGFloat(e)
         let de = popDock ? e : 1
-        dockPanel.simdPosition = SIMD3(0, -0.08 * (1 - de), 0)
+        dockPanel.simdPosition = SIMD3(0, -0.015 * (1 - de), 0)
+        dockPanel.simdScale = SIMD3(repeating: 0.98 + 0.02 * de)
         dockPanel.opacity = CGFloat(de)
-        let ke = 1 - pow(1 - Float(min(1, (CACurrentMediaTime() - kbPop) / 0.28)), 3)
-        kbPanel.simdPosition = SIMD3(0, -0.1 * (1 - ke), 0); kbPanel.opacity = CGFloat(ke)
+        let ke = 1 - pow(1 - Float(min(1, (CACurrentMediaTime() - kbPop) / 0.16)), 3)
+        kbPanel.simdPosition = SIMD3(0, -0.02 * (1 - ke), 0); kbPanel.opacity = CGFloat(ke)
+        if !shown && !dash.isHidden {   // close: 120 ms fade
+            let c = min(1, (CACurrentMediaTime() - closeStart) / 0.12)
+            dash.opacity = CGFloat(1 - c)
+            if c >= 1 { dash.isHidden = true; dash.opacity = 1 }
+        }
     }
 
     private func ray(_ aim: VR4Pose) -> (SIMD3<Float>, SIMD3<Float>) {

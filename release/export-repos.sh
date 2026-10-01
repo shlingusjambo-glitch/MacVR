@@ -3,6 +3,8 @@
 #   WineXR      runtime/ + common/ (+ protocol README)
 #   MacVR       mac/ + common/ (vendored) + release/ + README/docs
 #   QuestClient android/ (+ client README)
+#   SiliconXR   SiliconXR/ + common/ (+ README, notices)
+#   SiliconXR-Mod  SiliconXR-Mod/ (flat)
 # Nothing is pushed. The User reviews, creates the GitHub repos, and pushes.
 #
 # Required env (never defaulted — agent git identity must not leak in):
@@ -27,7 +29,7 @@ copy WineXR runtime common LICENSE THIRD_PARTY_NOTICES.md
 cp runtime/README.md "$OUT/WineXR/README.md"
 
 # --- MacVR ---
-copy MacVR mac common LICENSE THIRD_PARTY_NOTICES.md README.md release tools
+copy MacVR mac common LICENSE THIRD_PARTY_NOTICES.md README.md CHANGELOG.md release tools
 # published layout wants docs/ at top level: move mac/docs up, fix README refs
 mv "$OUT/MacVR/mac/docs" "$OUT/MacVR/docs"
 sed -i '' 's#mac/docs/screenshots#docs/screenshots#g' "$OUT/MacVR/README.md" 2>/dev/null || \
@@ -41,15 +43,23 @@ EOF
 copy QuestClient android LICENSE THIRD_PARTY_NOTICES.md
 cp android/README.md "$OUT/QuestClient/README.md"
 
-# scrub dev-only files from all three
-for r in WineXR MacVR QuestClient; do
-    (cd "$OUT/$r" && rm -rf mac/build runtime/build android/build android/app/build \
+# --- SiliconXR ---
+copy SiliconXR SiliconXR common LICENSE
+cp SiliconXR/README.md "$OUT/SiliconXR/README.md"
+mv "$OUT/SiliconXR/SiliconXR/THIRD_PARTY_NOTICES.md" "$OUT/SiliconXR/THIRD_PARTY_NOTICES.md"
+
+# --- SiliconXR-Mod ---
+mkdir -p "$OUT/SiliconXR-Mod"; cp -R SiliconXR-Mod/. "$OUT/SiliconXR-Mod/"; cp LICENSE "$OUT/SiliconXR-Mod/"
+
+# scrub dev-only files from all
+for r in WineXR MacVR QuestClient SiliconXR SiliconXR-Mod; do
+    (cd "$OUT/$r" && rm -rf build SiliconXR/build mac/build runtime/build android/build android/app/build \
         android/.gradle android/app/.cxx android/local.properties android/VR4Mac.apk \
         .agentcollab __pycache__ dist a.out *.pem *.ppm *.png 2>/dev/null || true; find . -name .DS_Store -delete)
 done
 
 # fresh history, User as author, no agent trailers
-for r in WineXR MacVR QuestClient; do
+for r in WineXR MacVR QuestClient SiliconXR SiliconXR-Mod; do
     (cd "$OUT/$r" && git init -q && git add -A && \
      git -c user.name="$AUTHOR_NAME" -c user.email="$AUTHOR_EMAIL" \
          commit -qm "Initial public release" && \

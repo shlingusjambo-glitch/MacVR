@@ -11,6 +11,7 @@ rm -rf $APP/Contents/Resources/environments; cp -R Resources/environments $APP/C
 rm -rf $APP/Contents/Resources/sounds; cp -R Resources/sounds $APP/Contents/Resources/   # UI sounds (AOSP, Apache-2.0) + welcome-tour music
 rm -rf $APP/Contents/Resources/icons; cp -R Resources/icons $APP/Contents/Resources/   # UI icons (Lucide, ISC)
 if [ -f ../runtime/build/vr4mac_openxr.dll ]; then cp ../runtime/build/vr4mac_openxr.dll $APP/Contents/Resources/; fi
+for f in ../SiliconXR/build/libsiliconxr_openxr.dylib ../SiliconXR-Mod/build/siliconxr.jar; do if [ -f $f ]; then cp $f $APP/Contents/Resources/; fi; done   # SiliconXR: VR for native Mac games
 # Stable designated requirement: TCC (Screen & System Audio Recording) grants then survive rebuilds; ad-hoc default is the cdhash.
 codesign -s - --force -r='designated => identifier "com.vr4mac.app"' $APP
 echo "built $APP"

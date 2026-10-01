@@ -63,7 +63,7 @@ final class UISounds {
 
     func play(_ name: String) {
         guard let wav = bank[name] else { return }
-        let shaped = shape(wav)
+        let shaped = shape(wav, UISounds.level[name] ?? 1)
         lock.lock(); pending.append(shaped); if pending.count > 32 { pending.removeFirst() }; lock.unlock()
         if headsetOnly { return }
         guard let pl = try? AVAudioPlayer(data: shaped as Data) else { return }
@@ -117,11 +117,13 @@ final class UISounds {
     }
 
     // MARK: synthesis (44.1 kHz stereo s16 WAV, volume/balance/mono in the mix)
-    private func shape(_ wav: Data) -> Data {
+    /// Quest-style restraint: hover and scroll ticks sit well under clicks; clicks under game audio.
+    private static let level: [String: Float] = ["hover": 0.3, "tick": 0.45, "tap": 0.7, "slider": 0.6]
+    private func shape(_ wav: Data, _ level: Float = 1) -> Data {
         let n = (wav.count - 44) / 4
         var out = Data(count: wav.count)
         out.replaceSubrange(0..<44, with: wav[0..<44])
-        let g = Float(volume) / 100, pan = Float(balance) / 50
+        let g = Float(volume) / 100 * level, pan = Float(balance) / 50
         let gl = mono ? g : g * min(1, 1 - pan), gr = mono ? g : g * min(1, 1 + pan)
         wav.withUnsafeBytes { (s: UnsafeRawBufferPointer) in
             out.withUnsafeMutableBytes { (d: UnsafeMutableRawBufferPointer) in

@@ -1,4 +1,5 @@
 import SwiftUI
+import SceneKit
 import AppKit
 
 @main
@@ -16,6 +17,23 @@ struct VR4MacApp: App {
             do { try g.setup(); print("setup OK, wine: \(Games.wine ?? "missing")"); exit(0) }
             catch { print("setup FAILED: \(error.localizedDescription)"); exit(1) }
         }
+        if let i = CommandLine.arguments.firstIndex(of: "--orbit") {   // video renders: Quest 2 controller turntable, transparent PNGs
+            let out = CommandLine.arguments[i + 1], n = Int(CommandLine.arguments[i + 2])!, hand = Int(CommandLine.arguments[i + 3]) ?? 0
+            let headset = hand == 2   // 2 = the headset
+            if let r = ProcessInfo.processInfo.environment["VR4_HEADSET_ROT"]?.split(separator: ",").compactMap({ Double($0) }), r.count == 3 {
+                HeadsetMesh.rotation = SCNVector3(r[0], r[1], r[2])
+            }
+            for k in 0..<n {
+                if let sh = ProcessInfo.processInfo.environment["VR4_ORBIT_SHARD"]?.split(separator: "/").compactMap({ Int($0) }), sh.count == 2, k % sh[1] != sh[0] { continue }
+                if FileManager.default.fileExists(atPath: "\(out)/orbit\(hand)-\(String(format: "%03d", k)).png") { continue }   // resumable
+                let a = Float(k) / Float(n) * 2 * .pi
+                let img = headset ? ControllerPortrait.renderNode(HeadsetMesh.quest2(), size: 900, dir: SIMD3(sin(a), 0.22, cos(a)), fill: 4.0)
+                                  : ControllerPortrait.render(.quest2, size: 900, dir: SIMD3(sin(a), -0.25, -cos(a)), hand: hand)
+                guard let img else { continue }
+                try? NSBitmapImageRep(cgImage: img).representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "\(out)/orbit\(hand)-\(String(format: "%03d", k)).png"))
+            }
+            exit(0)
+        }
         if let i = CommandLine.arguments.firstIndex(of: "--snapshot") {
             Engine().snapshot(to: CommandLine.arguments[i + 1]); exit(0)
         }
@@ -31,18 +49,19 @@ struct VR4MacApp: App {
     }
 }
 
-// MARK: MacVR OS look for the Mac windows (same slate glass + gradient badges as the in-headset shell)
+// MARK: MacVR OS look for the Mac windows: flat, solid colours (same palette as the in-headset shell)
 enum OS {
-    static let bg = LinearGradient(colors: [Color(red: 0.18, green: 0.21, blue: 0.26), Color(red: 0.11, green: 0.13, blue: 0.16)], startPoint: .top, endPoint: .bottom)
-    static let card = Color.white.opacity(0.06), stroke = Color.white.opacity(0.08)
+    static let bg = Color(red: 0.12, green: 0.145, blue: 0.176)
+    static let card = Color(red: 0.165, green: 0.192, blue: 0.227), stroke = Color(red: 0.24, green: 0.27, blue: 0.32)   // dividers
+    static let control = Color(red: 0.21, green: 0.24, blue: 0.29), sidebar = Color(red: 0.094, green: 0.11, blue: 0.137)
     static let accent = Color(red: 0.18, green: 0.55, blue: 1)
     static let dim = Color(white: 0.62)
-    static func grad(_ a: UInt32, _ b: UInt32) -> LinearGradient {
-        func c(_ v: UInt32) -> Color { Color(red: Double(v >> 16 & 255) / 255, green: Double(v >> 8 & 255) / 255, blue: Double(v & 255) / 255) }
-        return LinearGradient(colors: [c(a), c(b)], startPoint: .top, endPoint: .bottom)
+    /// Flat badge colour: the brighter of the two palette entries.
+    static func grad(_ a: UInt32, _ b: UInt32) -> Color {
+        Color(red: Double(a >> 16 & 255) / 255, green: Double(a >> 8 & 255) / 255, blue: Double(a & 255) / 255)
     }
 }
-/// Rounded gradient icon badge (like the dock's app icons / System Settings).
+/// Rounded flat icon badge (like the dock's app icons).
 struct Badge: View {
     let symbol: String, top: UInt32, bottom: UInt32; var size: CGFloat = 28
     var body: some View {
@@ -54,7 +73,7 @@ struct Card<Content: View>: View {
     @ViewBuilder var content: Content
     var body: some View {
         VStack(alignment: .leading, spacing: 0) { content }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 14).fill(OS.card)).overlay(RoundedRectangle(cornerRadius: 14).stroke(OS.stroke))
+            .background(RoundedRectangle(cornerRadius: 14).fill(OS.card))
     }
 }
 struct PillButton: View {
@@ -63,7 +82,7 @@ struct PillButton: View {
         Button(action: action) {
             HStack(spacing: 8) { Image(systemName: symbol); Text(title).fontWeight(.semibold) }
                 .font(.system(size: 13)).foregroundColor(.white).frame(maxWidth: .infinity).padding(.vertical, 9)
-                .background(Capsule().fill(primary ? AnyShapeStyle(OS.accent) : AnyShapeStyle(Color.white.opacity(0.1))))
+                .background(Capsule().fill(primary ? OS.accent : OS.control))
         }.buttonStyle(.plain)
     }
 }
@@ -101,7 +120,7 @@ struct StatusBody: View {
     @ObservedObject var games: Games
     var openSettings: () -> Void, openVRView: () -> Void
     private var version: String { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "" }
-    private var playing: Game? { e.nowPlaying.isEmpty ? nil : games.library.first { e.nowPlaying.localizedCaseInsensitiveContains($0.name) } }
+    private var playing: Game? { e.nowPlaying.isEmpty ? nil : games.playing(e.nowPlaying) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -118,7 +137,7 @@ struct StatusBody: View {
 
             Card {
                 HStack(spacing: 14) {
-                    HeadsetShape().fill(e.connected ? AnyShapeStyle(OS.grad(0x3aa0ff, 0x1467e0)) : AnyShapeStyle(Color.white.opacity(0.15)))
+                    HeadsetShape().fill(e.connected ? AnyShapeStyle(OS.grad(0x3aa0ff, 0x1467e0)) : AnyShapeStyle(OS.control))
                         .frame(width: 52, height: 34)
                     VStack(alignment: .leading, spacing: 3) {
                         Text(e.connected ? e.device : "No headset").font(.system(size: 15, weight: .semibold)).foregroundColor(.white)
@@ -170,11 +189,11 @@ struct StatusBody: View {
     }
     private func controller(_ side: String, _ on: Bool) -> some View {
         HStack(spacing: 6) {
-            Image(systemName: "gamecontroller.fill").foregroundColor(on ? OS.accent : Color.white.opacity(0.25))
+            Image(systemName: "gamecontroller.fill").foregroundColor(on ? OS.accent : OS.dim)
             Text(side).font(.system(size: 11)).foregroundColor(on ? .white : OS.dim)
             Spacer()
             Text(on ? "Tracking" : "Off").font(.system(size: 10)).foregroundColor(OS.dim)
-        }.padding(.horizontal, 10).padding(.vertical, 7).background(Capsule().fill(Color.white.opacity(0.06)))
+        }.padding(.horizontal, 10).padding(.vertical, 7).background(Capsule().fill(OS.card))
     }
 }
 
@@ -244,12 +263,12 @@ struct SettingsView: View {
                         Spacer()
                     }
                     .padding(.horizontal, 10).padding(.vertical, 7)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(ui.section == s.id ? Color.white.opacity(0.12) : .clear))
+                    .background(RoundedRectangle(cornerRadius: 8).fill(ui.section == s.id ? OS.control : .clear))
                     .contentShape(Rectangle()).onTapGesture { ui.section = s.id }
                 }
                 Spacer()
             }
-            .padding(.horizontal, 10).frame(width: 220).background(Color.black.opacity(0.22))
+            .padding(.horizontal, 10).frame(width: 220).background(OS.sidebar)
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {

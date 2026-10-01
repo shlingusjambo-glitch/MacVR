@@ -1,5 +1,7 @@
 import Foundation
 import SceneKit
+import ModelIO
+import SceneKit.ModelIO
 import AppKit
 import Metal
 import ImageIO
@@ -138,9 +140,8 @@ enum ControllerPortrait {
     }
 
     /// Left controller (it carries the menu button), 3/4 view showing face, trigger and grip; `part` lit in blue.
-    static func render(_ model: HeadsetModel, part: String = "none", size: Int = 640) -> CGImage? {
-        guard let device = MTLCreateSystemDefaultDevice() else { return nil }
-        let scene = SCNScene(), ctl = ControllerModels.build(model, hand: 0)
+    static func render(_ model: HeadsetModel, part: String = "none", size: Int = 640, dir: SIMD3<Float> = SIMD3(0.7, -0.3, -0.6), hand: Int = 0) -> CGImage? {
+        let ctl = ControllerModels.build(model, hand: hand)
         ctl.enumerateHierarchy { n, _ in   // own copies of meshes/materials (tinting must not touch the shared ones)
             if let g = n.geometry?.copy() as? SCNGeometry { g.materials = g.materials.map { $0.copy() as! SCNMaterial }; n.geometry = g }
         }
@@ -151,6 +152,13 @@ enum ControllerPortrait {
                 }
             }
         }
+        return renderNode(ctl, size: size, dir: dir)
+    }
+
+    /// Studio render of any node (transparent background): bright soft light from above, key + rim lights.
+    static func renderNode(_ ctl: SCNNode, size: Int = 640, dir: SIMD3<Float> = SIMD3(0.7, -0.3, -0.6), fill: CGFloat = 2.3) -> CGImage? {
+        guard let device = MTLCreateSystemDefaultDevice() else { return nil }
+        let scene = SCNScene()
         scene.rootNode.addChildNode(ctl)
         let env = CGContext(data: nil, width: 64, height: 32, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!   // studio light: bright above, dim below
@@ -165,7 +173,7 @@ enum ControllerPortrait {
         let center = SIMD3<Float>(Float(lo.x + hi.x) / 2, Float(lo.y + hi.y) / 2, Float(lo.z + hi.z) / 2)
         let radius = simd_length(SIMD3<Float>(Float(hi.x - lo.x), Float(hi.y - lo.y), Float(hi.z - lo.z))) / 2
         let cam = SCNNode(); cam.camera = SCNCamera(); cam.camera!.fieldOfView = 30; cam.camera!.zNear = 0.01
-        cam.simdPosition = center + simd_normalize(SIMD3<Float>(0.7, -0.3, -0.6)) * radius * 2.3
+        cam.simdPosition = center + simd_normalize(dir) * radius * Float(fill)
         cam.simdLook(at: center)
         scene.rootNode.addChildNode(cam)
         let r = SCNRenderer(device: device, options: nil); r.scene = scene; r.pointOfView = cam
@@ -174,5 +182,31 @@ enum ControllerPortrait {
         _ = r.snapshot(atTime: 0, with: CGSize(width: 64, height: 64), antialiasingMode: .none)
         let img = r.snapshot(atTime: 0, with: CGSize(width: size, height: size), antialiasingMode: .multisampling4X)
         return img.cgImage(forProposedRect: nil, context: nil, hints: nil)
+    }
+}
+
+/// The Quest 2 headset for video renders: a CC-BY 3D scan ("Cleaned Up Oculus/Meta Quest 2 3D Scan/Model" by Krazy_Kid59,
+/// thingiverse.com/thing:5971204), loaded from the STL at $VR4_HEADSET_STL, smoothed and shaded like the controllers.
+enum HeadsetMesh {
+    static var rotation = SCNVector3(0, 0, 0)   // orients the scan so its front faces +z
+    static func quest2() -> SCNNode {
+        let root = SCNNode()
+        guard let path = ProcessInfo.processInfo.environment["VR4_HEADSET_STL"] else { return root }
+        let asset = MDLAsset(url: URL(fileURLWithPath: path))
+        let m = SCNMaterial(); m.lightingModel = .physicallyBased
+        m.diffuse.contents = NSColor(white: 0.86, alpha: 1); m.roughness.contents = 0.38; m.metalness.contents = 0.0
+        for o in asset.childObjects(of: MDLMesh.self) {
+            guard let mesh = o as? MDLMesh else { continue }
+            mesh.addNormals(withAttributeNamed: MDLVertexAttributeNormal, creaseThreshold: 0.6)
+            let g = SCNGeometry(mdlMesh: mesh); g.materials = [m]
+            root.addChildNode(SCNNode(geometry: g))
+        }
+        let (lo, hi) = root.boundingBox   // centre it and size it like a real headset (~0.19 m wide)
+        let size = max(hi.x - lo.x, hi.y - lo.y, hi.z - lo.z)
+        let pivot = SCNNode(); pivot.addChildNode(root)
+        root.position = SCNVector3(-(lo.x + hi.x) / 2, -(lo.y + hi.y) / 2, -(lo.z + hi.z) / 2)
+        pivot.scale = SCNVector3(0.25 / size, 0.25 / size, 0.25 / size)
+        let outer = SCNNode(); outer.addChildNode(pivot); pivot.eulerAngles = rotation
+        return outer
     }
 }

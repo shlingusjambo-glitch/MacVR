@@ -19,6 +19,11 @@ final class Games: ObservableObject {
     var vrDir: URL { prefix.appendingPathComponent("drive_c/VR4Mac") }
     @Published var status = ""
     @Published private(set) var library: [Game] = []
+    /// The library game a running VR app is, by whole-word name match ("Minecraft" is not "Raft"); nil for non-Steam apps.
+    func playing(_ appName: String) -> Game? {
+        library.first { appName.range(of: "(^|[^\\p{L}\\p{N}])" + NSRegularExpression.escapedPattern(for: $0.name) + "($|[^\\p{L}\\p{N}])",
+                                      options: [.regularExpression, .caseInsensitive]) != nil }
+    }
     private(set) var news: [News] = []
     private var art: [String: CGImage] = [:], artLoading = Set<String>()
     var onUpdate: () -> Void = {}
@@ -139,6 +144,19 @@ final class Games: ObservableObject {
         } ?? 0
         return CGImageSourceCreateImageAtIndex(src, best, nil)
     }()
+
+    /// Steam's small square app icon from the user's Steam library cache (librarycache/<appid>/<sha1>.jpg, 32 px).
+    // ponytail: 32 px source, drawn upscaled on the dock; fetch the 256 px client .ico via appinfo.vdf if it looks soft
+    func icon(_ appid: String) -> CGImage? {
+        artLock.lock(); defer { artLock.unlock() }
+        if let i = art[appid + "/icon"] { return i }
+        let dir = steamapps.deletingLastPathComponent().appendingPathComponent("appcache/librarycache/\(appid)")
+        guard let f = (try? FileManager.default.contentsOfDirectory(atPath: dir.path))?.first(where: { $0.count == 44 && $0.hasSuffix(".jpg") }),
+              let src = CGImageSourceCreateWithURL(dir.appendingPathComponent(f) as CFURL, nil),
+              let img = CGImageSourceCreateImageAtIndex(src, 0, nil) else { return nil }
+        art[appid + "/icon"] = img
+        return img
+    }
 
     /// Ask Steam to uninstall a game (Steam asks to confirm on the Mac desktop).
     func uninstall(_ g: Game) { steamCommand("steam://uninstall/\(g.appid)", "Opening Steam uninstall for \(g.name)…", g) }

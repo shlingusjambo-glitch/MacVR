@@ -59,6 +59,7 @@ final class Engine: ObservableObject {
     private var floorOffset: Float = 0
     private var useHEVC = false
     private var dashVisible = true, needPlace = true, windowShown = true
+    private var menuDownAt: [CFTimeInterval] = [0, 0], menuHoldDone = [false, false]
     private var prevButtons: [UInt32] = [0, 0], prevTrigger: [Bool] = [false, false], prevGrip: [Bool] = [false, false], activeHand = 1
     private var grabHand: Int?                       // rq: hand dragging the window or dock by its grab bar
     private var desktopRect = CGRect.zero            // rq copy of dash.desktopRect
@@ -203,6 +204,7 @@ final class Engine: ObservableObject {
         gameSeq = shm.p.pointee.frame_seq   // frames left over from an earlier run are not a running game
         games.scan()
         DispatchQueue.global(qos: .utility).async { [weak self] in   // install/refresh runtime, OpenComposite and game fixes at startup
+            SiliconXR.install()   // VR for native Mac games (OpenXR + Vivecraft); independent of the Wine setup below
             do { try self?.games.setup() } catch { NSLog("VR4Mac: setup failed: \(error)") }
         }
         link.start()
@@ -414,20 +416,27 @@ final class Engine: ObservableObject {
         let valid = hs.map { $0.flags & UInt32(VR4_HAND_ACTIVE | VR4_HAND_POSE_VALID) == UInt32(VR4_HAND_ACTIVE | VR4_HAND_POSE_VALID) }
         if valid[0] != hands.0 || valid[1] != hands.1 { DispatchQueue.main.async { self.hands = (valid[0], valid[1]) } }
 
-        // left ≡ (menu) opens/closes the menu like the Quest system button; B / Y too if enabled in Settings
+        // left ≡ (menu) is the Quest system button: a press opens/closes the menu, holding it recenters (and opens) it.
+        // B / Y too if enabled in Settings.
         for i in 0..<2 {
             var mask = i == 0 ? UInt32(VR4_BTN_MENU) : 0
             if settings.bool("system_button") { mask |= UInt32(i == 0 ? VR4_BTN_Y : VR4_BTN_B) }
-            if valid[i] && hs[i].buttons & mask & ~prevButtons[i] != 0 {
+            let down = valid[i] && hs[i].buttons & mask != 0, was = prevButtons[i] & mask != 0
+            if down && !was { menuDownAt[i] = CACurrentMediaTime(); menuHoldDone[i] = false }
+            if down && !menuHoldDone[i] && CACurrentMediaTime() - menuDownAt[i] > 0.6 && dashView != "welcome" {
+                menuHoldDone[i] = true; needPlace = true; UISounds.shared.play("pop")   // hold: recenter in front of you
+                if !dashVisible { setMenu(true) } else { comp.pop(dock: true) }
+            }
+            if !down && was && !menuHoldDone[i] {
                 if dashView == "welcome" {   // the tour only ends on its last step, by pressing the menu button
                     if tourFinal { dq.async { [self] in dash.finishTutorial(); requestDraw() }; setMenu(false) }
                 } else { setMenu(!dashVisible) }
             }
-            prevButtons[i] = hs[i].buttons
+            prevButtons[i] = valid[i] ? hs[i].buttons : 0
         }
         shm.p.pointee.input_blocked = dashVisible ? 1 : 0
         if needPlace { comp.place(head: t.head); needPlace = false }
-        comp.dash.isHidden = !dashVisible
+        comp.setDashVisible(dashVisible)
 
         // laser pointers: trigger press/hold/release, grip = secondary, stick = scroll (or push/pull while grabbing)
         var rays: [Float?] = [nil, nil]
@@ -565,15 +574,15 @@ final class Engine: ObservableObject {
     func snapshot(to path: String) {
         let hevc = ProcessInfo.processInfo.environment["VR4_HEVC"] == "1"
         let readme = ProcessInfo.processInfo.environment["VR4_README"] == "1"   // one wide eye, no controller
-        hello(["eye_w": readme ? 1920 : 1024, "eye_h": readme ? 1250 : 1024, "device": "Test", "codecs": hevc ? ["hevc", "h264"] : ["h264"]])
-        let fov = readme ? VR4Fov(left: -0.6, right: 0.6, up: 0.3, down: -0.5) : VR4Fov(left: -0.8, right: 0.8, up: 0.8, down: -0.8)
+        hello(["eye_w": readme ? Int(ProcessInfo.processInfo.environment["VR4_EYE_W"] ?? "1920")! : 1024, "eye_h": readme ? Int(ProcessInfo.processInfo.environment["VR4_EYE_W"] ?? "1920")! * (ProcessInfo.processInfo.environment["VR4_WIDE"] == "1" ? 9 : 21) / (ProcessInfo.processInfo.environment["VR4_WIDE"] == "1" ? 16 : 32) : 1024, "device": "Test", "codecs": hevc ? ["hevc", "h264"] : ["h264"]])
+        let wide = ProcessInfo.processInfo.environment["VR4_WIDE"] == "1"   // video framing: smaller UI, room for captions
+        let fov = wide ? VR4Fov(left: -0.98, right: 0.98, up: 0.62, down: -0.72) : readme ? VR4Fov(left: -0.82, right: 0.82, up: 0.45, down: -0.75) : VR4Fov(left: -0.8, right: 0.8, up: 0.8, down: -0.8)
         func pose(_ x: Float, _ y: Float, _ z: Float) -> VR4Pose { VR4Pose(px: x, py: y, pz: z, qx: 0, qy: 0, qz: 0, qw: 1) }
         let aimDown = simd_quatf(angle: -0.25, axis: SIMD3(1, 0, 0))
         var hand = VR4Hand(flags: readme ? 0 : 3, buttons: 0, aim: pose(0.2, 1.3, -0.3), grip: pose(0.2, 1.3, -0.3), trigger: 0, squeeze: 0, stick_x: 0, stick_y: 0)
         hand.aim.qx = aimDown.imag.x; hand.aim.qw = aimDown.real
         let pitch = simd_quatf(angle: Float(ProcessInfo.processInfo.environment["VR4_PITCH"] ?? "0") ?? 0, axis: SIMD3(1, 0, 0))   // README renders
-        let back: Float = readme ? 0.55 : 0
-        func look(_ x: Float) -> VR4Pose { var p = pose(x, 1.6, back); p.qx = pitch.imag.x; p.qw = pitch.real; return p }
+        func look(_ x: Float) -> VR4Pose { var p = pose(x, 1.6, 0); p.qx = pitch.imag.x; p.qw = pitch.real; return p }
         let t = VR4Tracking(time_ns: 1, head: look(0), eye: (VR4Eye(pose: look(-0.032), fov: fov), VR4Eye(pose: look(0.032), fov: fov)),
                             hand: (VR4Hand(), hand))
         var nals: [UInt8] = []
@@ -589,11 +598,22 @@ final class Engine: ObservableObject {
             dq.sync { dash.testTourStep(st) }; dq.sync {}; dq.sync {}
             Thread.sleep(forTimeInterval: Double(ProcessInfo.processInfo.environment["VR4_SNAP_WAIT"] ?? "2.2") ?? 2.2)
         }
-        if let v = ProcessInfo.processInfo.environment["VR4_VIEW"] { dq.sync { dash.view = v }; requestDraw(); Thread.sleep(forTimeInterval: 0.6) }   // README renders
+        if ProcessInfo.processInfo.environment["VR4_GAMES"] == "1" { games.scan(); RunLoop.main.run(until: Date() + 5); dq.sync {} }   // video renders: real library
+        if let v = ProcessInfo.processInfo.environment["VR4_VIEW"] { dq.sync { dash.view = v }; requestDraw(); Thread.sleep(forTimeInterval: Double(ProcessInfo.processInfo.environment["VR4_SNAP_WAIT"] ?? "0.6") ?? 0.6) }   // README renders
+        if let k = ProcessInfo.processInfo.environment["VR4_CLICK"]?.split(separator: ",").compactMap({ Double($0) }), k.count == 2 {   // canvas px
+            dq.sync { dash.click(CGPoint(x: k[0] / Double(Dashboard.W), y: k[1] / Double(Dashboard.H))); dash.draw() }
+        }
+        if let n = ProcessInfo.processInfo.environment["VR4_SCROLL"].flatMap({ Int($0) }) {   // stick-scroll steps over the window
+            dq.sync { for _ in 0..<n { _ = dash.scroll(-1, at: CGPoint(x: 0.5, y: 0.25)) }; dash.draw() }
+        }
         if let h = ProcessInfo.processInfo.environment["VR4_HOVER"]?.split(separator: ",").compactMap({ Double($0) }), h.count == 2 {   // canvas px
             dq.sync { _ = dash.pointer(CGPoint(x: h[0] / Double(Dashboard.W), y: h[1] / Double(Dashboard.H))) }; requestDraw()
         }
         Thread.sleep(forTimeInterval: 0.4)   // let window pop-in animations settle
+        if let p = ProcessInfo.processInfo.environment["VR4_DASH_PNG"] {   // video renders: the raw dashboard canvas with alpha
+            dq.sync { dash.draw(); if let img = dash.context.makeImage() { try? NSBitmapImageRep(cgImage: img).representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: p)) } }
+            return
+        }
         dq.sync {}; dq.sync {}
         rq.sync {}   // finish selected view's texture and dock/keyboard updates before capture
         Thread.sleep(forTimeInterval: 0.4)
