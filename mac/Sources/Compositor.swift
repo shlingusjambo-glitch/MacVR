@@ -163,15 +163,15 @@ final class Compositor {
     private func resetLayout() {
         let m = metersPerPx
         win.simdTransform = matrix_identity_float4x4; dockNode.simdTransform = matrix_identity_float4x4; kbNode.simdTransform = matrix_identity_float4x4
-        if questLayout {   // Horizon OS: a small window just past arm's reach, the dock low and close, by the hands
-            win.simdPosition = SIMD3(0, 0.06, 0)
-            win.simdScale = SIMD3(repeating: 0.6)            // ~0.75 m wide at 0.95 m (~45°)
-            let winBottom = 0.06 - 0.6 * Float(Dashboard.SPLIT) * m / 2
-            dockNode.simdPosition = SIMD3(0, winBottom - 0.16, 0.4)   // ~0.55 m from the eyes, chest height
-            dockNode.simdEulerAngles = SIMD3(-0.5, 0, 0)
-            dockNode.simdScale = SIMD3(repeating: 0.55)
-            kbNode.simdPosition = SIMD3(0, winBottom - 0.36, 0.48)
-            kbNode.simdEulerAngles = SIMD3(-0.75, 0, 0)
+        if questLayout {   // Horizon OS: a compact window with the dock right under it, about as wide, both in reach
+            win.simdPosition = SIMD3(0, 0.08, 0)
+            win.simdScale = SIMD3(repeating: 0.42)           // ~0.6 m wide at 0.95 m
+            let winBottom = 0.08 - 0.42 * Float(Dashboard.SPLIT) * m / 2
+            dockNode.simdPosition = SIMD3(0, winBottom - 0.075, 0.06)   // just below the window's grab bar, a touch closer
+            dockNode.simdEulerAngles = SIMD3(-0.18, 0, 0)
+            dockNode.simdScale = SIMD3(repeating: 0.7)
+            kbNode.simdPosition = SIMD3(0, winBottom - 0.27, 0.3)
+            kbNode.simdEulerAngles = SIMD3(-0.6, 0, 0)
             kbNode.simdScale = SIMD3(repeating: 0.45)
             return
         }
@@ -576,15 +576,43 @@ final class Compositor {
         return best
     }
 
+    // MARK: direct touch
+    struct Touch { let uv: CGPoint; let depth: Float; let normal: SIMD3<Float> }
+    /// Where hand `i`'s index fingertip is against the menu: canvas uv, depth along the panel normal (metres, positive
+    /// in front of it, negative pushed through) and the panel's outward normal. nil if not over a panel.
+    func touch(_ i: Int, grip: VR4Pose) -> Touch? {
+        guard !dash.isHidden, panel.geometry != nil, let hm = handModels[i] else { return nil }
+        var g = simd_float4x4(simd_quatf(ix: grip.qx, iy: grip.qy, iz: grip.qz, r: grip.qw)); g.columns.3 = SIMD4(grip.px, grip.py, grip.pz, 1)
+        let tip4 = g * SIMD4(hm.indexTip, 1), tip = SIMD3(tip4.x, tip4.y, tip4.z)
+        let m = metersPerPx, w = Float(Dashboard.W) * m, h = Float(Dashboard.H) * m, sp = Compositor.split, sp2 = Compositor.split2, r = radius
+        var best: Touch?
+        for (n, v0, v1) in [(panel, Float(0), sp), (dockPanel, sp, sp2), (kbPanel, sp2, Float(1))] where !(n === kbPanel && kbNode.isHidden) {
+            let p = n.simdConvertPosition(tip, from: nil), ph = h * (v1 - v0)
+            let a = Compositor.curved ? asin(max(-1, min(1, p.x / r))) : 0
+            let zs = Compositor.curved ? r - r * cos(a) : 0
+            let u = Compositor.curved ? a * r / w + 0.5 : p.x / w + 0.5, vl = 0.5 - p.y / ph
+            guard u >= 0, u <= 1, vl >= 0, vl <= 1 else { continue }
+            let nl = Compositor.curved ? SIMD3(-sin(a), 0, cos(a)) : SIMD3<Float>(0, 0, 1)
+            let scale = simd_length(n.simdConvertVector(SIMD3(1, 0, 0), to: nil))
+            let d = simd_dot(p - SIMD3(p.x, p.y, zs), nl) * scale
+            guard d > -0.08, d < 0.15, abs(d) < abs(best?.depth ?? .infinity) else { continue }
+            best = Touch(uv: CGPoint(x: CGFloat(u), y: CGFloat(v0 + vl * (v1 - v0))), depth: d, normal: simd_normalize(n.simdConvertVector(nl, to: nil)))
+        }
+        return best
+    }
+
     var lasersAlways = false   // theater: lasers drive the Mac even with the menu closed
-    func updateHands(_ t: VR4Tracking, rays: [Float?]) {
+    /// `push`: offset holding a hand (and its controller) on a panel it touches. `poke`: hand near the menu points its
+    /// index (and hides its laser).
+    func updateHands(_ t: VR4Tracking, rays: [Float?], push: [SIMD3<Float>] = [.zero, .zero], poke: [Bool] = [false, false]) {
         let hs = [t.hand.0, t.hand.1]
         for (i, h) in hs.enumerated() {
             let valid = h.flags & UInt32(VR4_HAND_POSE_VALID) != 0
             let n = hands[i]
             n.grip.isHidden = !valid; n.aim.isHidden = !valid || (dash.isHidden && !lasersAlways)
-            n.grip.simdPosition = SIMD3(h.grip.px, h.grip.py, h.grip.pz); n.grip.simdOrientation = simd_quatf(ix: h.grip.qx, iy: h.grip.qy, iz: h.grip.qz, r: h.grip.qw)
-            if valid { rigs[i].update(h); handModels[i]?.update(h, targets: rigs[i].targets()) }
+            n.grip.simdPosition = SIMD3(h.grip.px, h.grip.py, h.grip.pz) + push[i]; n.grip.simdOrientation = simd_quatf(ix: h.grip.qx, iy: h.grip.qy, iz: h.grip.qz, r: h.grip.qw)
+            if valid { rigs[i].update(h); handModels[i]?.update(h, targets: rigs[i].targets(), poke: poke[i]) }
+            if poke[i] { n.aim.isHidden = true }
             n.aim.simdPosition = SIMD3(h.aim.px, h.aim.py, h.aim.pz); n.aim.simdOrientation = simd_quatf(ix: h.aim.qx, iy: h.aim.qy, iz: h.aim.qz, r: h.aim.qw)
             let len = rays[i] ?? 3
             n.laser.scale = SCNVector3(1, CGFloat(len), 1)

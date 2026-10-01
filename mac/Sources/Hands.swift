@@ -36,9 +36,9 @@ final class HandModel {
     static var place: [HeadsetModel: Placement] = [   // fitted offline: palm on the handle, fingertips on its surface,
         // index on the trigger, thumb able to reach the thumbrest, stick and both face buttons, least overlap,
         // a straight index along the aim ray
-        .quest1: (SIMD3(-0.0458, 0.0121, 0.0337), SIMD3(0.4, 3.2316, 0.3225)),
-        .quest2: (SIMD3(-0.0344, 0.0093, 0.0293), SIMD3(0.52, 3.1378, 0.1313)),
-        .quest3: (SIMD3(-0.0336, 0.0059, 0.0025), SIMD3(0.6625, 3.0516, 0.045)),
+        .quest1: (SIMD3(-0.0292, 0.0212, 0.0406), SIMD3(0.4, 3.2953, 0.375)),
+        .quest2: (SIMD3(-0.0256, 0.0213, 0.0398), SIMD3(0.445, 3.3816, 0.39)),
+        .quest3: (SIMD3(-0.0259, 0.02, 0.0398), SIMD3(0.3325, 3.3816, 0.3675)),
     ]
     private var mirror: SIMD3<Float> { left ? SIMD3(1, 1, 1) : SIMD3(-1, 1, 1) }
 
@@ -149,7 +149,7 @@ final class HandModel {
     private func curl(_ finger: Int, _ c: Float) {
         for k in 0..<3 { hinge(1 + finger * 3 + k, c * [1.3, 1.6, 1.1][k]) }
     }
-    /// Close pinky/ring/middle around the controller until each fingertip pad touches its surface.
+    /// Close pinky/ring/middle around the controller's handle.
     private func fitGrasp(_ controller: SCNNode) {
         var cloud: [SIMD3<Float>] = []
         controller.enumerateHierarchy { n, _ in
@@ -162,23 +162,36 @@ final class HandModel {
                 }
             }
         }
-        cloud.removeAll { $0.z < -0.004 }   // the handle only (grip +z is back): the ring and trigger housing sit in front
-        guard !cloud.isEmpty else { return }
+        // the handle as an elliptic cylinder along grip z (measured from the mesh); the ring and trigger are in front
+        let hs = cloud.filter { $0.z > 0.01 && $0.z < 0.055 }
+        guard let x0 = hs.map(\.x).min(), let x1 = hs.map(\.x).max(), let y0 = hs.map(\.y).min(), let y1 = hs.map(\.y).max() else { return }
+        let c = SIMD2((x0 + x1) / 2, (y0 + y1) / 2), r = SIMD2((x1 - x0) / 2, (y1 - y0) / 2), zEnd = cloud.map(\.z).max()!
         let toGrip = node.simdTransform
-        func touching(_ p: SIMD3<Float>) -> Bool {
-            let g = toGrip * SIMD4(p, 1), q = SIMD3(g.x, g.y, g.z)
-            return cloud.contains { simd_distance_squared($0, q) < 0.0085 * 0.0085 }
+        /// Signed distance (approx.) from the handle surface, positive outside.
+        func outside(_ p: SIMD3<Float>) -> Float {
+            let g = toGrip * SIMD4(p, 1)
+            guard g.z > -0.005 && g.z < zEnd else { return 1 }
+            return (simd_length((SIMD2(g.x, g.y) - c) / r) - 1) * min(r.x, r.y)
         }
-        for f in 0..<3 {   // even curl until the fingertip pad reaches the surface (proximal overlap is hidden by the translucency)
-            var c: Float = 0
-            while c < 1 {
-                curl(f, c)
-                let m = worldMatrices(), bi = 3 + f * 3
-                if touching(posed(m, joints[f][3], bi)) || touching(posed(m, (joints[f][2] + joints[f][3]) / 2, bi)) { break }
-                c += 0.02
+        for f in 0..<3 {   // knuckle angles that wrap the finger (~8 mm thick) around the handle, pad resting on it
+            let bi = 1 + f * 3, j = joints[f]
+            var best: (cost: Float, a: [Float]) = (.infinity, [0.8, 1.2, 0.8])
+            for a1 in stride(from: Float(0), through: 1.4, by: 0.07) {
+                for a2 in stride(from: Float(0.2), through: 1.8, by: 0.07) {
+                    let a = [a1, a2, a2 * 0.7]
+                    for k in 0..<3 { hinge(bi + k, a[k]) }
+                    let m = worldMatrices()
+                    var cost: Float = 0
+                    for k in 0..<3 {
+                        let s = posed(m, j[k], k == 0 ? 0 : bi + k - 1), e = posed(m, j[k + 1], bi + k)
+                        for t in stride(from: Float(0.25), through: 1, by: 0.25) { cost += max(0, 0.008 - outside(s + (e - s) * t)) }
+                        if k > 0 { cost += 0.15 * abs(outside((s + e) / 2) - 0.008) }   // middle and tip segments rest on it
+                    }
+                    if cost < best.cost { best = (cost, a) }
+                }
             }
-            grasp[f] = [1.3, 1.6, 1.1].map { $0 * c }
-            curl(f, 0)
+            grasp[f] = best.a
+            for k in 0..<3 { hinge(bi + k, 0) }
         }
     }
     /// Cyclic coordinate descent: bend `chain` (root first) so its last segment's end reaches `target` (mesh space).
@@ -210,31 +223,52 @@ final class HandModel {
     /// Thumb and index targets in grip space, from the controller mesh (nil: no mesh, use plain curls).
     struct Targets { var stick, rest, trigger: SIMD3<Float>; var buttons: [Int: SIMD3<Float>] }
     /// Pose from the controller state. `targets` come from the animated controller (trigger moves as it's pulled).
-    func update(_ h: VR4Hand, targets: Targets?) {
+    /// `poke`: a hand near the menu straightens its index to touch it. Every joint eases toward its new pose
+    /// (~60 ms), so fingers glide onto the trigger and buttons instead of snapping.
+    func update(_ h: VR4Hand, targets: Targets?, poke: Bool = false) {
         let b = h.buttons
         func on(_ f: Int) -> Bool { b & UInt32(f) != 0 }
-        let key: [Float] = [h.trigger, h.squeeze, h.stick_x, h.stick_y, Float(b & 0x1ff)] + (targets.map { [$0.trigger.y, $0.trigger.z] } ?? [])
-        guard key != poseKey else { return }
-        poseKey = key
-        for i in bones.indices { bones[i].q = simd_quatf(angle: 0, axis: SIMD3(0, 0, 1)) }
-        for f in 0..<3 { for k in 0..<3 { hinge(1 + f * 3 + k, grasp[f][k] + (0.08 * h.squeeze - 0.03) * Float(k + 1) / 2) } }   // resting on the handle, tighter when squeezed
-        let toMesh = simd_inverse(node.simdTransform)
-        func mesh(_ p: SIMD3<Float>) -> SIMD3<Float> { let r = toMesh * SIMD4(p, 1); return SIMD3(r.x, r.y, r.z) }
-        if (on(VR4_BTN_TRIGGER_TOUCH) || h.trigger > 0.05), let t = targets { reach([10, 11, 12], tip: joints[3][3], mesh(t.trigger)) }
-        else { curl(3, 0.06) }   // lifted off the trigger: point
-        if let t = targets {
-            let thumb: SIMD3<Float>
-            if let pressed = t.buttons.first(where: { on($0.key) }) { thumb = pressed.value }
-            else if on(VR4_BTN_STICK_TOUCH) || on(VR4_BTN_STICK_CLICK) { thumb = t.stick + SIMD3(h.stick_x, 0, -h.stick_y) * 0.008 }
-            else if on(VR4_BTN_THUMB_TOUCH) { thumb = t.rest }
-            else { thumb = t.rest + SIMD3(0, 0.02, 0.006) }   // lifted just above the face
-            reach([13, 14, 15], tip: joints[4][3], mesh(thumb))
+        let key: [Float] = [h.trigger, h.squeeze, h.stick_x, h.stick_y, Float(b & 0x1ff), poke ? 1 : 0] + (targets.map { [$0.trigger.y, $0.trigger.z] } ?? [])
+        if key != poseKey {
+            poseKey = key
+            for i in bones.indices { bones[i].q = simd_quatf(angle: 0, axis: SIMD3(0, 0, 1)) }
+            for f in 0..<3 { for k in 0..<3 { hinge(1 + f * 3 + k, grasp[f][k] + (0.08 * h.squeeze - 0.03) * Float(k + 1) / 2) } }   // resting on the handle, tighter when squeezed
+            let toMesh = simd_inverse(node.simdTransform)
+            func mesh(_ p: SIMD3<Float>) -> SIMD3<Float> { let r = toMesh * SIMD4(p, 1); return SIMD3(r.x, r.y, r.z) }
+            if !poke, on(VR4_BTN_TRIGGER_TOUCH) || h.trigger > 0.05, let t = targets { reach([10, 11, 12], tip: joints[3][3], mesh(t.trigger)) }
+            else { curl(3, 0.04) }   // lifted off the trigger, or poking the menu: point
+            if let t = targets {
+                let thumb: SIMD3<Float>
+                if let pressed = t.buttons.first(where: { on($0.key) }) { thumb = pressed.value - SIMD3(0, 0.004, 0) }   // pressing it down
+                else if on(VR4_BTN_STICK_TOUCH) || on(VR4_BTN_STICK_CLICK) { thumb = t.stick + SIMD3(h.stick_x, 0, -h.stick_y) * 0.008 }
+                else if on(VR4_BTN_THUMB_TOUCH) || poke { thumb = t.rest }
+                else { thumb = t.rest + SIMD3(0, 0.016, 0.004) }   // lifted just above the face
+                reach([13, 14, 15], tip: joints[4][3], mesh(thumb))
+            }
+            target = bones.map(\.q)
         }
+        let now = CACurrentMediaTime(), dt = Float(min(0.1, now - lastStep)); lastStep = now
+        var moving = shown.count != target.count
+        if moving { shown = target }
+        let a = 1 - exp(-dt * 16)
+        for i in shown.indices {
+            let t = simd_dot(shown[i].vector, target[i].vector) < 0 ? simd_quatf(vector: -target[i].vector) : target[i]
+            let n = simd_slerp(shown[i], t, a)
+            if simd_length(n.vector - shown[i].vector) > 1e-4 { moving = true }
+            shown[i] = n
+        }
+        guard moving else { return }
+        for i in bones.indices { bones[i].q = shown[i] }
         apply()
     }
+    private var target: [simd_quatf] = [], shown: [simd_quatf] = [], lastStep: CFTimeInterval = 0
+    /// Index fingertip pad in grip space (the menu's direct touch tracks it).
+    private(set) var indexTip = SIMD3<Float>.zero
 
     private func apply() {
         let m = worldMatrices()
+        let tip = posed(m, joints[3][3] + simd_normalize(joints[3][3] - joints[3][2]) * 0.004, 12), tg = node.simdTransform * SIMD4(tip, 1)
+        indexTip = SIMD3(tg.x, tg.y, tg.z)
         var v = [SIMD3<Float>](), n = [SIMD3<Float>]()
         v.reserveCapacity(rest.count); n.reserveCapacity(rest.count)
         for (i, p) in rest.enumerated() {

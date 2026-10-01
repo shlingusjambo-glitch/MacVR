@@ -61,6 +61,8 @@ final class Engine: ObservableObject {
     private var dashVisible = true, needPlace = true, windowShown = true
     private var menuDownAt: [CFTimeInterval] = [0, 0], menuHoldDone = [false, false]
     private var prevButtons: [UInt32] = [0, 0], prevTrigger: [Bool] = [false, false], prevGrip: [Bool] = [false, false], activeHand = 1
+    /// Direct touch: the index fingertip is pressing a panel (tap = click, slide = drag); last fingertip depth.
+    private var touchDown = [false, false], touchDepth: [Float] = [1, 1]
     private var grabHand: Int?                       // rq: hand dragging the window or dock by its grab bar
     private var desktopRect = CGRect.zero            // rq copy of dash.desktopRect
     private var detected: HeadsetModel = .quest2     // from HELLO
@@ -434,6 +436,41 @@ final class Engine: ObservableObject {
         }
     }
 
+    /// Laser pointers on the menu: trigger press/hold/release, grip = secondary, stick = scroll.
+    private func lasers(_ t: VR4Tracking, _ hs: [VR4Hand], _ valid: [Bool], _ trig: [Bool], _ grip: [Bool], _ rays: inout [Float?], _ poke: [Bool]) {
+        var hits: [(uv: CGPoint, dist: Float)?] = [nil, nil]
+        for i in 0..<2 where valid[i] && !poke[i] {
+            if let h = comp.hit(hs[i].aim, solid: dash.solid) { hits[i] = h; rays[i] = h.dist }
+        }
+        if !trig[activeHand] {   // the hand that pulls the trigger (or the only one pointing at the menu) drives it
+            if let i = (0..<2).first(where: { hits[$0] != nil && trig[$0] && !prevTrigger[$0] }) { activeHand = i }
+            else if hits[activeHand] == nil, let i = (0..<2).first(where: { hits[$0] != nil }) { activeHand = i }
+        }
+        let a = activeHand, uv = hits[a]?.uv, dist = hits[a]?.dist, aim = hs[a].aim, head = t.head
+        let down = trig[a] && !prevTrigger[a], held = trig[a] && prevTrigger[a], up = !trig[a] && prevTrigger[a]
+        let secondary = grip[a] && !prevGrip[a], stick = grabHand == nil ? hs[a].stick_y : 0
+        if grabHand == nil, dashView == "desktop", abs(hs[a].stick_x) > 0.5, hits[a] != nil {
+            comp.zoomWindow(hs[a].stick_x * 0.012)   // stick left/right on the Mac desktop: smaller/bigger window
+        }
+        dq.async { [self] in
+            var changed = false
+            if down, let uv {
+                let p = dash.press(uv)
+                if p == .grabWindow || p == .grabDock || p == .grabKeyboard, let dist {
+                    dash.grabbing = p == .grabWindow ? "grab" : p == .grabDock ? "grabdock" : "grabkb"
+                    let part: Compositor.Part = p == .grabWindow ? .window : p == .grabDock ? .dock : .keyboard
+                    rq.async { self.grabHand = a; self.comp.beginGrab(part, aim, dist: dist, head: head) }
+                }
+                changed = true
+            } else if held, let uv { dash.drag(uv) }
+            if up { dash.release(uv); changed = true }
+            if secondary, let uv { dash.secondary(uv) }
+            if abs(stick) > 0.2, let uv, dash.scroll(stick, at: uv) { changed = true }
+            if dash.pointer(uv) { changed = true; if uv != nil { haptic(a, 0.25, 0.015) } }
+            if changed { requestDraw() }
+        }
+    }
+
     private func frame(_ t: VR4Tracking) {
         lastTrack = t
         guard eyeW > 0 else { return }
@@ -464,7 +501,7 @@ final class Engine: ObservableObject {
         comp.setDashVisible(dashVisible)
 
         // laser pointers: trigger press/hold/release, grip = secondary, stick = scroll (or push/pull while grabbing)
-        var rays: [Float?] = [nil, nil]
+        var rays: [Float?] = [nil, nil], push: [SIMD3<Float>] = [.zero, .zero], poke = [false, false]
         let trig = (0..<2).map { valid[$0] && hs[$0].trigger > 0.55 }
         let grip = (0..<2).map { valid[$0] && hs[$0].squeeze > 0.7 }
         if dashVisible {
@@ -476,40 +513,29 @@ final class Engine: ObservableObject {
                 }
                 else { grabHand = nil; UISounds.shared.play("drop"); dq.async { [self] in dash.grabbing = nil; requestDraw() } }
             }
-            var hits: [(uv: CGPoint, dist: Float)?] = [nil, nil]
-            for i in 0..<2 where valid[i] {
-                if let h = comp.hit(hs[i].aim, solid: dash.solid) { hits[i] = h; rays[i] = h.dist }
+            // direct touch: a fingertip on a panel holds the hand at the surface (unless pushed 6 cm through) and taps click
+            var touchUV: CGPoint?
+            for i in 0..<2 {
+                let tc = valid[i] ? comp.touch(i, grip: hs[i].grip) : nil
+                let onMenu = tc.map { dash.solid($0.uv) } ?? false, d = onMenu ? tc!.depth : 1
+                poke[i] = onMenu && d < 0.12
+                if onMenu && d <= 0 && d > -0.06 { push[i] = tc!.normal * -d }
+                let wasDown = touchDown[i], down = onMenu && d <= 0 && d > -0.06 && (wasDown || touchDepth[i] > 0)
+                touchDown[i] = down && (wasDown || d > -0.03)   // entering from the front only, not by pushing through
+                touchDepth[i] = d
+                guard onMenu, let uv = tc?.uv else { if wasDown { dq.async { [self] in dash.release(nil); requestDraw() } }; continue }
+                if d < 0.04 { touchUV = uv; rays[i] = nil }
+                if touchDown[i] && !wasDown {
+                    haptic(i, 0.5, 0.02)
+                    dq.async { [self] in if dash.press(uv) != .handled { dash.release(nil) }; requestDraw() }
+                } else if touchDown[i] { dq.async { [self] in dash.drag(uv) } }
+                else if wasDown { dq.async { [self] in dash.release(uv); requestDraw() } }
             }
-            if !trig[activeHand] {   // the hand that pulls the trigger (or the only one pointing at the menu) drives it
-                if let i = (0..<2).first(where: { hits[$0] != nil && trig[$0] && !prevTrigger[$0] }) { activeHand = i }
-                else if hits[activeHand] == nil, let i = (0..<2).first(where: { hits[$0] != nil }) { activeHand = i }
-            }
-            let a = activeHand, uv = hits[a]?.uv, dist = hits[a]?.dist, aim = hs[a].aim, head = t.head
-            let down = trig[a] && !prevTrigger[a], held = trig[a] && prevTrigger[a], up = !trig[a] && prevTrigger[a]
-            let secondary = grip[a] && !prevGrip[a], stick = grabHand == nil ? hs[a].stick_y : 0
-            if grabHand == nil, dashView == "desktop", abs(hs[a].stick_x) > 0.5, hits[a] != nil {
-                comp.zoomWindow(hs[a].stick_x * 0.012)   // stick left/right on the Mac desktop: smaller/bigger window
-            }
-            dq.async { [self] in
-                var changed = false
-                if down, let uv {
-                    let p = dash.press(uv)
-                    if p == .grabWindow || p == .grabDock || p == .grabKeyboard, let dist {
-                        dash.grabbing = p == .grabWindow ? "grab" : p == .grabDock ? "grabdock" : "grabkb"
-                        let part: Compositor.Part = p == .grabWindow ? .window : p == .grabDock ? .dock : .keyboard
-                        rq.async { self.grabHand = a; self.comp.beginGrab(part, aim, dist: dist, head: head) }
-                    }
-                    changed = true
-                } else if held, let uv { dash.drag(uv) }
-                if up { dash.release(uv); changed = true }
-                if secondary, let uv { dash.secondary(uv) }
-                if abs(stick) > 0.2, let uv, dash.scroll(stick, at: uv) { changed = true }
-                if dash.pointer(uv) { changed = true; if uv != nil { haptic(a, 0.25, 0.015) } }
-                if changed { requestDraw() }
-            }
+            if let uv = touchUV { dq.async { [self] in if dash.pointer(uv) { requestDraw() } } }   // a finger at the menu drives it
+            if touchUV == nil || grabHand != nil { lasers(t, hs, valid, trig, grip, &rays, poke) }
         }
         for i in 0..<2 { prevTrigger[i] = trig[i]; prevGrip[i] = grip[i] }
-        comp.updateHands(t, rays: rays)
+        comp.updateHands(t, rays: rays, push: push, poke: poke)
 
         // the desktop tab streams the Mac screen onto the dashboard
         let wantDesktop = dashVisible && windowShown && dashView == "desktop"

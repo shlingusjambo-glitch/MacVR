@@ -236,12 +236,12 @@ final class Dashboard {
     /// Flat tile fill for app icons and system tiles (the brighter palette colour, no gradient).
     private func grad(_ r: CGRect, _ rad: CGFloat, _ top: UInt32, _ bottom: UInt32) { rr(r, rad, top) }
     /// Quest style: the same layouts in neutral greys with Meta's blue (SteamVR style keeps its blue-grey slate).
-    private static let questPalette: [UInt32: UInt32] = [
-        0x1f252dff: 0x232426ff, 0x353d49ff: 0x38393cff, 0x4f5a69ff: 0x4a4b4fff, 0x2a313aff: 0x2b2c2eff, 0x2c343fff: 0x2e2f32ff,
-        0x303945ff: 0x313235ff, 0x3c4654ff: 0x3d3e42ff, 0x3a4452ff: 0x3a3b3eff, 0x56606eff: 0x505155ff, 0x46505eff: 0x46474bff,
-        0x4a5462ff: 0x48494dff, 0x5a6472ff: 0x5a5b5fff, 0x222932ff: 0x1c1d1fff, 0x323b47ff: 0x333437ff, 0x3c4755ff: 0x3e3f43ff,
-        0x1b2129ff: 0x1e1f21ff, 0x2f3742ff: 0x2f3033ff, 0x0d1117ff: 0x161719ff, 0x15181df2: 0x1c1d1ff2,
-        0x2d8cffff: 0x2f6df6ff, 0x4a9dffff: 0x4a83f8ff, 0x9aa3afff: 0xa3a5aaff, 0xc9cfd8ff: 0xcfd0d3ff, 0xd8dde4ff: 0xdcdde0ff,
+    private static let questPalette: [UInt32: UInt32] = [   // Horizon OS slate (sampled from the headset's own UI)
+        0x1f252dff: 0x243039ff, 0x353d49ff: 0x46525dff, 0x4f5a69ff: 0x56636fff, 0x2a313aff: 0x3a4550ff, 0x2c343fff: 0x34404aff,
+        0x303945ff: 0x34404aff, 0x3c4654ff: 0x3d4a55ff, 0x3a4452ff: 0x46525dff, 0x56606eff: 0x56636fff, 0x46505eff: 0x515e69ff,
+        0x4a5462ff: 0x4f5c67ff, 0x5a6472ff: 0x5d6a75ff, 0x222932ff: 0x1d2830ff, 0x323b47ff: 0x34404aff, 0x3c4755ff: 0x3d4a55ff,
+        0x1b2129ff: 0x1f2b33ff, 0x2f3742ff: 0x34404aff, 0x0d1117ff: 0x1a242bff, 0x15181df2: 0x1c272ef2,
+        0x2d8cffff: 0x2a73f5ff, 0x4a9dffff: 0x4a88f7ff, 0x9aa3afff: 0xa4adb4ff, 0xc9cfd8ff: 0xd2d8dcff, 0xd8dde4ff: 0xe0e5e8ff,
     ]
     private func col(_ c: UInt32) -> CGColor {   // 0xRRGGBBAA
         let c = quest ? Dashboard.questPalette[c] ?? c : c
@@ -253,7 +253,8 @@ final class Dashboard {
     }
     private func txt(_ s: String, _ x: CGFloat, _ y: CGFloat, _ size: CGFloat, _ c: UInt32 = 0xffffffff, bold: Bool = false,
                      align: CGFloat = 0, maxW: CGFloat = 5000) {
-        let font = NSFont.systemFont(ofSize: max(size, 26), weight: bold ? .semibold : .medium)   // VR legibility floor; Quest text is medium, not bold
+        var font = NSFont.systemFont(ofSize: max(size, 26), weight: bold ? .semibold : .medium)   // VR legibility floor; Quest text is medium, not bold
+        if quest, let d = font.fontDescriptor.withDesign(.rounded) { font = NSFont(descriptor: d, size: font.pointSize) ?? font }   // Horizon OS's rounded type
         func line(_ s: String) -> CTLine {
             CTLineCreateWithAttributedString(NSAttributedString(string: s, attributes: [.font: font, .foregroundColor: NSColor(cgColor: col(c))!]))
         }
@@ -448,17 +449,17 @@ final class Dashboard {
     /// minimise on the left and the app name centred (like Horizon OS windows).
     private func questChrome() {
         let w = Dashboard.WIN, bar = CGRect(x: w.minX, y: w.maxY - 72, width: w.width, height: 72)
-        rr(w, 30, 0x232426ff)
+        rr(w, 30, 0x243039ff)
         ctx.saveGState(); ctx.addPath(path(w, 30)); ctx.clip()
-        ctx.setFillColor(col(0x161719ff)); ctx.fill(bar)
+        ctx.setFillColor(col(0x1a242bff)); ctx.fill(bar)
         ctx.restoreGState()
         let x = CGRect(x: bar.minX + 14, y: bar.minY + 8, width: 56, height: 56), m = CGRect(x: x.maxX + 8, y: x.minY, width: 56, height: 56)
         if btn("win:close", x, { [unowned self] in windowOpen = false; sounds.play("close"); redraw() }) || isPressed("win:close") { rr(x, 16, 0xffffff1c) }
         icon("x", x.midX, x.midY, 0xffffffff, 0.8)
         if btn("win:min", m, { [unowned self] in windowOpen = false; sounds.play("back"); redraw() }) || isPressed("win:min") { rr(m, 16, 0xffffff1c) }
         rr(CGRect(x: m.midX - 13, y: m.midY - 2, width: 26, height: 4), 2, 0xffffffff)
-        txt(title, bar.midX, bar.midY + 10, 27, 0xcfd0d3ff, align: 0.5)
-        if !games.status.isEmpty { txt(games.status, m.maxX + 24, bar.midY + 10, 26, 0xa3a5aaff, maxW: bar.width / 2 - 260) }
+        txt(title, bar.midX, bar.midY + 10, 27, 0xd2d8dcff, align: 0.5)
+        if !games.status.isEmpty { txt(games.status, m.maxX + 24, bar.midY + 10, 26, 0xa4adb4ff, maxW: bar.width / 2 - 260) }
         if view == "desktop" { desktopKeyboardButton(CGRect(x: bar.maxX - 70, y: bar.minY + 8, width: 56, height: 56)) }
         grabBar("grab", Dashboard.GRAB)
     }
@@ -599,51 +600,52 @@ final class Dashboard {
         }
         grabBar("grabdock", Dashboard.DOCKGRAB)
     }
-    /// Quest Universal Menu (Horizon OS): a compact grey bar sized to its contents and centred under the window.
-    /// Left: clock, avatar and a row of status glyphs (opens Quick Settings; the bell opens notifications). Then
-    /// colourful rounded app tiles, recent games, a divider and the App Library grid. The active app gets a small bar
-    /// under its tile; hover shows the name above.
+    /// Quest Universal Menu (Horizon OS): a slim slate pill under the window. Left: avatar, notifications and a status
+    /// pill (link, time) that opens Quick Settings. Then small rounded app tiles and recent games, a divider and the
+    /// App Library on a slate plate. The active app gets a short bar under its tile; hover shows the name above.
     private func questDock() {
         var items: [String] = gameActive ? ["playing"] : []
         items += settings.bool("show_desktop_tabs") ? ["desktop", "steam"] : ["steam"]
         if settings.bool("show_settings_tab") { items.append("settings") }
         let recent = recents.compactMap { id in self.games.library.first { $0.appid == id } }
-        let tile: CGFloat = 80, gap: CGFloat = 22, statusW: CGFloat = 250
+        let tile: CGFloat = 66, gap: CGFloat = 16, statusW: CGFloat = 330
         let tiles = CGFloat(items.count + recent.count)
-        let width = 24 + statusW + 28 + tiles * (tile + gap) + 26 + tile + 24
-        let d = CGRect(x: Dashboard.DOCK.midX - width / 2, y: Dashboard.DOCK.minY, width: width, height: Dashboard.DOCK.height)
+        let width = 18 + statusW + 70 + tiles * (tile + gap) + 22 + tile + 22
+        let d = CGRect(x: Dashboard.DOCK.midX - width / 2, y: Dashboard.DOCK.midY - 46, width: width, height: 92)
         dockRect = d
-        rr(d, 34, 0x2a2b2dff)
+        rr(d, 46, 0x1f2b33ff)
         var tip: (CGRect, String)?
-        // status: time + AM/PM, avatar with presence dot; link, notifications and fps glyphs underneath
-        let st = CGRect(x: d.minX + 14, y: d.minY + 10, width: statusW, height: d.height - 20)
-        if btn("dock:quick", st, { [unowned self] in nav("quick") }) { tip = (st, "Quick Settings") }
-        if isPressed("dock:quick") { rr(st, 22, 0xffffff26) } else if hover == "dock:quick" { rr(st, 22, 0xffffff12) }
+        // avatar with presence dot
+        let av = CGRect(x: d.minX + 22, y: d.midY - 22, width: 44, height: 44)
+        rr(av, 22, 0xd9467aff)
+        if let first = Dashboard.userName.first { txt(String(first).uppercased(), av.midX, av.midY + 9, 26, bold: true, align: 0.5) }
+        else { icon("person", av.midX, av.midY, 0xffffffff, 0.6) }
+        rr(CGRect(x: av.maxX - 13, y: av.maxY - 13, width: 15, height: 15), 7.5, 0x1f2b33ff)
+        rr(CGRect(x: av.maxX - 11, y: av.maxY - 11, width: 11, height: 11), 5.5, 0x45d36bff)   // headset connected
+        // notifications
+        let bell = CGRect(x: av.maxX + 12, y: d.midY - 26, width: 52, height: 52)
+        if btn("dock:notifications", bell, { [unowned self] in nav("notifications") }) { tip = (bell, "Notifications"); rr(bell, 26, 0xffffff1c) }
+        icon("bell", bell.midX, bell.midY, 0xe0e5e8ff, 0.6)
+        if unread > 0 { rr(CGRect(x: bell.maxX - 16, y: bell.minY + 8, width: 11, height: 11), 5.5, 0x2a73f5ff) }
+        // status pill: link, fps, time -> Quick Settings
         let tf = DateFormatter(); tf.dateFormat = "h:mm"
-        let af = DateFormatter(); af.dateFormat = "a"
-        let time = tf.string(from: Date())
-        txt(time, st.minX + 16, st.minY + 46, 34, bold: true)
-        txt(af.string(from: Date()), st.minX + 22 + CGFloat(time.count) * 19, st.minY + 46, 26, 0xcfd0d3ff)
-        let av = CGRect(x: st.maxX - 66, y: st.minY + 8, width: 52, height: 52)
-        rr(av, 26, 0xd9467aff)
-        if let first = Dashboard.userName.first { txt(String(first).uppercased(), av.midX, av.midY + 10, 27, bold: true, align: 0.5) }
-        else { icon("person", av.midX, av.midY, 0xffffffff, 0.7) }
-        rr(CGRect(x: av.maxX - 16, y: av.maxY - 16, width: 18, height: 18), 9, 0x2a2b2dff)
-        rr(CGRect(x: av.maxX - 13, y: av.maxY - 13, width: 12, height: 12), 6, 0x45d36bff)   // headset connected
-        icon(linkStatus == "USB" ? "usb" : "wifi", st.minX + 32, st.maxY - 24, 0xdcdde0ff, 0.62)
-        let bell = CGRect(x: st.minX + 62, y: st.maxY - 46, width: 46, height: 44)
-        if btn("dock:notifications", bell, { [unowned self] in nav("notifications") }) { tip = (bell, "Notifications"); rr(bell, 12, 0xffffff1c) }
-        icon("bell", bell.midX, bell.midY, 0xdcdde0ff, 0.62)
-        if unread > 0 { rr(CGRect(x: bell.maxX - 14, y: bell.minY + 6, width: 11, height: 11), 5.5, 0x2f6df6ff) }
-        if settings.bool("show_fps") { txt("\(fps) fps", st.minX + 120, st.maxY - 14, 26, 0x5ee07aff) }
+        let time = tf.string(from: Date()), fpsText = settings.bool("show_fps") ? "\(fps)" : ""
+        let pw = 130 + CGFloat(time.count + fpsText.count) * 15
+        let st = CGRect(x: bell.maxX + 12, y: d.midY - 26, width: pw, height: 52)
+        if btn("dock:quick", st, { [unowned self] in nav("quick") }) { tip = (st, "Quick Settings") }
+        rr(st, 26, isPressed("dock:quick") ? 0x46525dff : hover == "dock:quick" ? 0x3e4c55ff : 0x34434bff)
+        icon(linkStatus == "USB" ? "usb" : "wifi", st.minX + 32, st.midY, 0xe0e5e8ff, 0.55)
+        if !fpsText.isEmpty { txt(fpsText, st.minX + 58, st.midY + 9, 26, 0x5ee07aff) }
+        txt(time, st.maxX - 22, st.midY + 9, 26, 0xe0e5e8ff, align: 1)
+        if view == "quick" { rr(CGRect(x: st.midX - 12, y: d.maxY - 10, width: 24, height: 4), 2, 0xc8d0d6ff) }
         // app tiles
-        var x = st.maxX + 28
+        var x = max(st.maxX + 40, d.minX + 18 + statusW + 70)
         func slot(_ id: String, _ label: String, _ draw: (CGRect) -> Void, _ fn: @escaping () -> Void, active: Bool) {
-            let r = CGRect(x: x, y: d.midY - tile / 2 - 4, width: tile, height: tile)
+            let r = CGRect(x: x, y: d.midY - tile / 2 - 3, width: tile, height: tile)
             let h = btn("dock:" + id, r, fn)
             draw(r)
-            if isPressed("dock:" + id) { rr(r, 22, 0x00000050) } else if h { outline(r.insetBy(dx: -5, dy: -5), 26, 0xffffffc0, 3) }
-            if active { rr(CGRect(x: r.midX - 14, y: d.maxY - 13, width: 28, height: 5), 2.5, 0xbfc0c4ff) }
+            if isPressed("dock:" + id) { rr(r, 18, 0x00000050) } else if h { outline(r.insetBy(dx: -4, dy: -4), 21, 0xffffffc0, 3) }
+            if active { rr(CGRect(x: r.midX - 12, y: d.maxY - 10, width: 24, height: 4), 2, 0xc8d0d6ff) }
             if h { tip = (r, label) }
             x += tile + gap
         }
@@ -658,12 +660,12 @@ final class Dashboard {
             slot("game:" + g.appid, g.name, { [unowned self] r in gameIcon(g, r) }, { [unowned self] in start(g) },
                  active: gameActive && self.games.playing(gameName) == g)
         }
-        rr(CGRect(x: x + 1, y: d.minY + 30, width: 2, height: d.height - 60), 1, 0xffffff30); x += 26
-        slot("library", "App Library", { [unowned self] r in rr(r, 22, 0x3c3d41ff); icon("apps", r.midX, r.midY, 0xffffffff, 1.0) },
+        rr(CGRect(x: x + 2, y: d.minY + 24, width: 2, height: d.height - 48), 1, 0xffffff2a); x += 22
+        slot("library", "App Library", { [unowned self] r in rr(r, 18, 0x46525dff); icon("apps", r.midX, r.midY, 0xffffffff, 0.85) },
              { [unowned self] in nav("library") }, active: view == "library" || view == "keyboard")
         if let (r, label) = tip {
             let w = CGFloat(label.count) * 15 + 44, tt = CGRect(x: min(max(r.midX - w / 2, 20), CGFloat(Dashboard.W) - w - 20), y: d.minY - 58, width: w, height: 46)
-            rr(tt, 12, 0x1c1d1ff2); txt(label, tt.midX, tt.midY + 9, 26, align: 0.5)
+            rr(tt, 12, 0x1c272ef2); txt(label, tt.midX, tt.midY + 9, 26, align: 0.5)
         }
         grabBar("grabdock", Dashboard.DOCKGRAB)
     }
@@ -898,6 +900,68 @@ final class Dashboard {
         let all = CGRect(x: c.maxX - 340, y: c.maxY - 100, width: 320, height: 84)
         face(all, 42, on: btn("q:all", all) { [unowned self] in nav("settings") })
         icon("gear", all.minX + 52, all.midY, 0xffffffff, 1.0); txt("All Settings", all.minX + 92, all.midY + 11, 30, bold: true)
+    }
+
+    /// Quest Quick Settings (Horizon OS): status and date on top, thick pill sliders, big cards, then small toggle tiles.
+    private func drawQuickQuest() {
+        let c = content
+        let df = DateFormatter(); df.dateFormat = "EEE, MMM d, yyyy"
+        txt(status(fps > 0 ? ["\(fps) fps"] : []), c.minX, c.minY + 30, 26, 0xa4adb4ff, maxW: 560)
+        txt(df.string(from: Date()), c.midX, c.minY + 30, 28, 0xe0e5e8ff, align: 0.5)
+        let gear = CGRect(x: c.maxX - 230, y: c.minY - 6, width: 230, height: 60)
+        face(gear, 30, on: btn("q:all", gear) { [unowned self] in nav("settings") }, base: 0x00000000, hot: 0x46525dff)
+        icon("gear", gear.minX + 38, gear.midY, 0xffffffff, 0.95); txt("Settings", gear.minX + 72, gear.midY + 10, 28, bold: true)
+        // pill sliders: blue fill, white knob carrying the icon
+        func pill(_ id: String, _ r: CGRect, _ value: Float, _ ic: String, _ set: @escaping (Float) -> Void) {
+            let hot = dragRegion(id, r.insetBy(dx: -6, dy: -10)) { [unowned self] p, phase in
+                guard phase != 3 else { sounds.play("slider"); return }
+                set(min(1, max(0, Float((p.x - r.minX - r.height / 2) / (r.width - r.height))))); redraw()
+            }
+            rr(r, r.height / 2, 0x34404aff)
+            let kx = r.minX + CGFloat(value) * (r.width - r.height)
+            rr(CGRect(x: r.minX, y: r.minY, width: kx - r.minX + r.height, height: r.height), r.height / 2, 0x2a73f5ff)
+            let k = CGRect(x: kx + 5, y: r.minY + 5, width: r.height - 10, height: r.height - 10).insetBy(dx: hot ? -3 : 0, dy: hot ? -3 : 0)
+            rr(k, k.height / 2, 0xffffffff)
+            icon(ic, k.midX, k.midY, 0x1f2b33ff, 0.75)
+        }
+        let sw = (c.width - 30) / 2
+        pill("q:vol", CGRect(x: c.minX, y: c.minY + 74, width: sw, height: 66), Float(sounds.streamVolume) / 100, "speaker") { [unowned self] v in sounds.streamVolume = Int(v * 100) }
+        pill("q:bright", CGRect(x: c.minX + sw + 30, y: c.minY + 74, width: sw, height: 66), Float(sounds.brightness - 20) / 80, "sun") { [unowned self] v in sounds.brightness = 20 + Int(v * 80) }
+        // big cards: icon top-left, title + subtitle bottom-left
+        let envs = Settings.items["environment"]!.options
+        let cards: [(String, String, String, String, () -> Void)] = [
+            ("q:desktop", "monitor", "Mac Desktop", desktopStreaming ? "Streaming" : "See and use your Mac", { [unowned self] in nav("desktop") }),
+            ("q:env", "mountain", "Environment", settings["environment"], { [unowned self] in
+                let i = ((envs.firstIndex(of: settings["environment"]) ?? 0) + 1) % envs.count
+                settings.set("environment", envs[i]); sounds.play("env") }),
+        ]
+        for (i, (id, ic, title, sub, fn)) in cards.enumerated() {
+            let r = CGRect(x: c.minX + CGFloat(i) * (sw + 30), y: c.minY + 172, width: sw, height: 220)
+            let h = btn(id, r) { fn(); self.redraw() }
+            rr(r, 30, isPressed(id) ? 0x3a4550ff : h ? 0x56636fff : 0x46525dff)
+            icon(ic, r.minX + 50, r.minY + 52, 0xffffffff, 1.1)
+            txt(title, r.minX + 34, r.maxY - 72, 36, bold: true, maxW: r.width - 60)
+            txt(sub, r.minX + 34, r.maxY - 32, 26, 0xc0c8ceff, maxW: r.width - 60)
+        }
+        // small tiles: icon over label; on = blue
+        var tiles: [(String, String, String, Bool, () -> Void)] = gameActive ? [("q:resume", "play", "Resume", false, { [unowned self] in close() })] : []
+        tiles += [
+            ("q:recenter", "recenter", "Reset view", false, { [unowned self] in recenter(); note("View recentered") }),
+            ("q:theater", "theater", "Theater", theaterOn, { [unowned self] in theater(!theaterOn) }),
+            ("q:mic", "mic", "Headset Mic", Mic.shared.useHeadset, { [unowned self] in
+                Mic.shared.choice = Mic.shared.useHeadset ? "" : Mic.headset
+                note(Mic.shared.useHeadset ? "Headset mic on" : "Headset mic off"); sounds.play(Mic.shared.useHeadset ? "on" : "off") }),
+            ("q:notes", "bell", "Notifications", false, { [unowned self] in nav("notifications") }),
+        ]
+        if gameActive { tiles.append(("q:quit", "power", "Quit Game", false, { [unowned self] in power() })) }
+        let tw = (c.width - CGFloat(tiles.count - 1) * 24) / CGFloat(tiles.count), ty = c.minY + 420
+        for (i, (id, ic, label, on, fn)) in tiles.enumerated() {
+            let r = CGRect(x: c.minX + CGFloat(i) * (tw + 24), y: ty, width: tw, height: 170)
+            let h = btn(id, r) { [unowned self] in fn(); redraw() }
+            rr(r, 30, isPressed(id) ? 0x3a4550ff : on ? (h ? 0x4a88f7ff : 0x2a73f5ff) : h ? 0x56636fff : 0x46525dff)
+            icon(ic, r.midX, r.minY + 62, 0xffffffff, 1.05)
+            txt(label, r.midX, r.maxY - 34, 27, align: 0.5, maxW: r.width - 24)
+        }
     }
 
     // MARK: Settings (sidebar like the Quest's System settings)
@@ -1232,7 +1296,7 @@ final class Dashboard {
             switch view {
             case "playing": drawPlaying()
             case "desktop": drawDesktop()
-            case "quick": drawQuick()
+            case "quick": if quest { drawQuickQuest() } else { drawQuick() }
             case "settings": drawSettings()
             case "notifications": drawNotifications()
             case "appsettings": drawAppSettings()
