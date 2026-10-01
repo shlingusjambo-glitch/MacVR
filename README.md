@@ -6,24 +6,21 @@ Universal Menu over your game: dock, quick settings, desktop control, and a
 pop-up keyboard.
 
 <p align="center">
-  <img src="docs/screenshots/in-headset.png" alt="MacVR OS app library and floating dock in the current home environment" width="100%">
+  <img src="docs/screenshots/library.jpg" alt="MacVR OS app library and floating dock in the current home environment" width="100%">
 </p>
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/screenshots/welcome-tour.png" alt="Welcome tour with a 3D controller and highlighted trigger"><br><strong>Learn the controls</strong> — guided setup with a live controller model.</td>
-    <td width="50%"><img src="docs/screenshots/quick-settings.png" alt="Quick Settings with four shortcuts, volume and brightness"><br><strong>Quick Settings</strong> — shortcuts and adjustments within reach.</td>
+    <td width="50%"><img src="docs/screenshots/welcome.jpg" alt="Welcome tour with a 3D controller and highlighted trigger"><br><strong>Learn the controls</strong> — guided setup with a live controller model.</td>
+    <td width="50%"><img src="docs/screenshots/quick.jpg" alt="Quick Settings with four shortcuts, volume and brightness"><br><strong>Quick Settings</strong> — shortcuts and adjustments within reach.</td>
   </tr>
   <tr>
-    <td><img src="docs/screenshots/app-library.png" alt="Current app library with Desktop, Steam, Theater and built-in apps"><br><strong>App library</strong> — Steam, desktop, theater and built-in apps.</td>
-    <td><img src="docs/screenshots/settings.png" alt="Settings sidebar and headset display controls"><br><strong>Settings</strong> — display, controllers, audio and environments.</td>
-  </tr>
-  <tr>
-    <td colspan="2" align="center"><img src="docs/screenshots/keyboard.png" alt="Floating keyboard with its grab bar beneath the dock" width="70%"><br><strong>Floating keyboard</strong> — type and move the keyboard where you want it.</td>
+    <td><img src="docs/screenshots/keyboard.jpg" alt="Pop-up keyboard with its grab bar beneath the dock"><br><strong>Pop-up keyboard</strong> — type, and move it by its own grab bar.</td>
+    <td><img src="docs/screenshots/settings.jpg" alt="Settings sidebar and headset display controls"><br><strong>Settings</strong> — display, controllers, audio and environments.</td>
   </tr>
 </table>
 
-Screenshots rendered from the current MacVR OS shell.
+Screenshots are single-eye renders from the MacVR OS compositor.
 
 ## What it is
 
