@@ -62,7 +62,7 @@ final class UISounds {
     var headsetOnly = false
 
     func play(_ name: String) {
-        guard let wav = bank[name] else { return }
+        guard let wav = bank[name], wav.count >= 44 + 8 else { return }
         let shaped = shape(wav, UISounds.level[name] ?? 1)
         lock.lock(); pending.append(shaped); if pending.count > 32 { pending.removeFirst() }; lock.unlock()
         if headsetOnly { return }

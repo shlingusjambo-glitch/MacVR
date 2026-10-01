@@ -35,13 +35,18 @@ release/   build-release.sh (DMG/zip + APK staging), export-repos.sh (publish sp
 
 ## Install (release)
 
-1. Download `MacVR-<version>.dmg` and the Quest `VR4Mac.apk` from Releases.
-2. Open the DMG, drag MacVR to Applications, and launch it.
-3. The first launch sets everything up by itself: Wine engine (≈250 MB
-   download), Steam bottle, the WineXR runtime, and OpenComposite — then shows
-   an onboard tutorial (OOBE). Grant **Screen & System Audio Recording** and
-   **Accessibility** when asked (desktop view/control needs them).
-4. On the Quest, install the APK (`adb install VR4Mac.apk`), plug in USB
+1. Download `MacVR-<version>.dmg` and `MacVR-Quest-<version>.apk` from Releases.
+2. Open the DMG and drag MacVR to Applications. MacVR isn't notarized, so the first
+   time macOS blocks it: open **System Settings > Privacy & Security** and click
+   **Open Anyway** under the MacVR message.
+3. The first launch sets everything up by itself:
+   - It downloads the Wine engine (≈250 MB) and creates the Steam bottle.
+   - It installs the WineXR runtime and OpenComposite.
+   - It sets up SiliconXR (native Mac VR, including Vivecraft).
+   - It offers to install the "MacVR Headset Mic" driver so games hear your headset's mic.
+   Then it shows a short tutorial. Grant **Screen & System Audio Recording** and
+   **Accessibility** when asked; desktop view and control need them.
+4. On the Quest, install the APK (`adb install MacVR-Quest-<version>.apk`), plug in USB
    (or join the same Wi-Fi), and pick your game in the library. VR-capable
    games already installed under Wine are detected automatically.
 

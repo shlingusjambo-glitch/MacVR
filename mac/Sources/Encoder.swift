@@ -6,19 +6,22 @@ final class Encoder {
     private var session: VTCompressionSession?
     private(set) var width = 0, height = 0
     private(set) var hevc = false
-    private var frameNo: Int64 = 0
+    private var frameNo: Int64 = 0, generation = 0   // generation: frames from an old session are dropped
     var forceIDR = true
     private var loggedError = false
     var onFrame: (_ annexB: Data, _ idr: Bool, _ timeNs: UInt64) -> Void = { _, _, _ in }
 
-    func configure(width w: Int, height h: Int, fps: Int, mbps: Int, maxQP: Int, hevc useHEVC: Bool = false) {
-        if let s = session { VTCompressionSessionInvalidate(s) }
-        width = w; height = h; forceIDR = true; hevc = useHEVC
+    /// Returns false if VideoToolbox could not create the session (the caller falls back, e.g. HEVC -> H.264).
+    @discardableResult func configure(width w: Int, height h: Int, fps: Int, mbps: Int, maxQP: Int, hevc useHEVC: Bool = false) -> Bool {
+        if let s = session { VTCompressionSessionInvalidate(s); session = nil }
+        width = w; height = h; forceIDR = true; hevc = useHEVC; generation += 1; loggedError = false
         let spec = [kVTVideoEncoderSpecification_EnableLowLatencyRateControl: true] as CFDictionary
-        VTCompressionSessionCreate(allocator: nil, width: Int32(w), height: Int32(h), codecType: useHEVC ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264,
+        let created = VTCompressionSessionCreate(allocator: nil, width: Int32(w), height: Int32(h), codecType: useHEVC ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264,
                                    encoderSpecification: spec, imageBufferAttributes: nil, compressedDataAllocator: nil,
                                    outputCallback: nil, refcon: nil, compressionSessionOut: &session)
-        guard let s = session else { return }
+        guard created == noErr, let s = session else {
+            NSLog("VR4Mac: %@ encoder %dx%d failed to start (%d)", useHEVC ? "HEVC" : "H.264", w, h, created); session = nil; return false
+        }
         let props: [CFString: Any] = [
             kVTCompressionPropertyKey_RealTime: true,
             kVTCompressionPropertyKey_ProfileLevel: useHEVC ? kVTProfileLevel_HEVC_Main_AutoLevel : kVTProfileLevel_H264_High_AutoLevel,
@@ -41,6 +44,7 @@ final class Encoder {
         let st = VTSessionSetProperty(s, key: kVTCompressionPropertyKey_MaxAllowedFrameQP, value: maxQP as CFTypeRef)
         NSLog("VR4Mac: %@ encoder %dx%d @ %d fps, %d Mbps, max QP %d (%@)", useHEVC ? "HEVC" : "H.264", w, h, fps, mbps, maxQP, st == noErr ? "ok" : "unsupported \(st)")
         VTCompressionSessionPrepareToEncodeFrames(s)
+        return true
     }
 
     func encode(_ pb: CVPixelBuffer, timeNs: UInt64) {
@@ -53,14 +57,15 @@ final class Encoder {
         frameNo += 1
         // Real capture time: rate control budgets bits per second from PTS spacing. Counting frames as 1 ms apart told VT
         // it had 1000 fps, so slow games (BONELAB ~33 fps) got a tiny per-frame budget and frames were dropped.
+        let hevc = self.hevc, gen = generation
         let pts = CMTime(value: CMTimeValue(DispatchTime.now().uptimeNanoseconds / 1000), timescale: 1_000_000)
         VTCompressionSessionEncodeFrame(s, imageBuffer: pb, presentationTimeStamp: pts,
                                         duration: .invalid, frameProperties: opts, infoFlagsOut: nil) { [weak self] status, _, sb in
-            guard status == noErr, let sb, let self else {
+            guard status == noErr, let sb, let self, self.generation == gen else {
                 if status != noErr, self?.loggedError == false { self?.loggedError = true; NSLog("VR4Mac: encode failed %d", status) }
                 return
             }
-            let (data, idr) = Encoder.annexB(sb, hevc: self.hevc)
+            let (data, idr) = Encoder.annexB(sb, hevc: hevc)
             self.onFrame(data, idr, timeNs)
         }
     }

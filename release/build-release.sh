@@ -32,6 +32,15 @@ mkdir -p "$OUT"
 echo "== WineXR runtime =="
 ./runtime/build.sh
 
+echo "== SiliconXR (native Mac VR runtime) + its Minecraft mod =="
+./SiliconXR/build.sh
+if [ -z "$JAVAC" ]; then   # first javac that actually runs (/usr/bin/javac is a stub without a JDK)
+    for j in javac /opt/homebrew/opt/openjdk/bin/javac /opt/homebrew/opt/openjdk@21/bin/javac "$HOME/Library/Application Support/PrismLauncher/java/java-runtime-gamma/bin/javac"; do
+        if "$j" -version >/dev/null 2>&1; then JAVAC="$j"; break; fi
+    done
+fi
+JAVAC="$JAVAC" ./SiliconXR-Mod/build.sh
+
 echo "== MacVR.app =="
 ./mac/build.sh
 
@@ -71,10 +80,12 @@ cp LICENSE THIRD_PARTY_NOTICES.md README.md "$OUT/"
 
 echo "== package =="
 rm -rf dist/dmg-tmp && mkdir -p dist/dmg-tmp
-cp -R mac/build/VR4Mac.app dist/dmg-tmp/
+cp -R mac/build/VR4Mac.app dist/dmg-tmp/MacVR.app   # shipped as MacVR.app (same bundle id/signature)
 cp "$OUT"/*.md dist/dmg-tmp/ 2>/dev/null || true
-(cd dist && zip -qr "MacVR-$VERSION-mac.zip" dmg-tmp/VR4Mac.app dmg-tmp/*.md)
+(cd dist/dmg-tmp && zip -qry "../MacVR-$VERSION-mac.zip" MacVR.app *.md)
 mv "dist/MacVR-$VERSION-mac.zip" "$OUT/"
+[ -f "$OUT/VR4Mac-Quest.apk" ] && mv "$OUT/VR4Mac-Quest.apk" "$OUT/MacVR-Quest-$VERSION.apk"
+ln -s /Applications dist/dmg-tmp/Applications   # drag-to-install DMG
 if [ "$DMG" = 1 ] && command -v hdiutil >/dev/null; then
     rm -f "$OUT/MacVR-$VERSION.dmg"
     hdiutil create -volname "MacVR $VERSION" -srcfolder dist/dmg-tmp -ov -format UDZO "$OUT/MacVR-$VERSION.dmg" >/dev/null

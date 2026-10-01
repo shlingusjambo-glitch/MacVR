@@ -1,7 +1,10 @@
 import Foundation
 
+/// MACVR_HOME (tests only): run as a brand-new user, with the Wine wrapper and app data under that folder.
+let macvrHome = ProcessInfo.processInfo.environment["MACVR_HOME"].map { URL(fileURLWithPath: $0) }
 let appSupport: URL = {
-    let u = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("VR4Mac")
+    let u = (macvrHome?.appendingPathComponent("Library/Application Support")
+             ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]).appendingPathComponent("VR4Mac")
     try? FileManager.default.createDirectory(at: u, withIntermediateDirectories: true)
     return u
 }()

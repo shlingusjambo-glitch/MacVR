@@ -86,8 +86,9 @@ final class Mic {
         guard let au = e.outputNode.audioUnit,
               AudioUnitSetProperty(au, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &id, UInt32(MemoryLayout<AudioObjectID>.size)) == noErr,
               let fmt = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1) else { return }
-        let src = AVAudioSourceNode(format: fmt) { [unowned self] _, _, frames, abl in
+        let src = AVAudioSourceNode(format: fmt) { [weak self] _, _, frames, abl in
             let out = UnsafeMutableAudioBufferListPointer(abl)[0].mData!.assumingMemoryBound(to: Float.self)
+            guard let self else { for i in 0..<Int(frames) { out[i] = 0 }; return noErr }
             feedLock.lock()
             let n = min(Int(frames), feed.count)
             for i in 0..<n { out[i] = Float(feed[i]) / 32768 }

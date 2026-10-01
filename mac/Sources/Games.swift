@@ -12,7 +12,7 @@ struct News { let appid, title, label: String; let date: Date }
 /// Wine bottle with Steam + OpenComposite + the VR4Mac OpenXR runtime; library, art and news.
 final class Games: ObservableObject {
     /// Sikarugir wrapper that owns the Windows bottle (Steam + games) and the Wine engine.
-    static let wrapper = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Applications/Sikarugir/Steam.app")
+    static let wrapper = (macvrHome ?? URL(fileURLWithPath: NSHomeDirectory())).appendingPathComponent("Applications/Sikarugir/Steam.app")
     let prefix = Games.wrapper.appendingPathComponent("Contents/SharedSupport/prefix")
     var steamapps: URL { prefix.appendingPathComponent("drive_c/Program Files (x86)/Steam/steamapps") }
     var steamExe: URL { prefix.appendingPathComponent("drive_c/Program Files (x86)/Steam/steam.exe") }
@@ -58,7 +58,14 @@ final class Games: ObservableObject {
             rescan()
         }
     }
+    private var scanStamp: [Date] = []
     private func rescan() {
+        // every 4 s, but only re-parse when Steam's caches, a manifest or the VR folder actually changed
+        let mtimes = [steamapps, vrDir, steamapps.deletingLastPathComponent().appendingPathComponent("appcache/appinfo.vdf")]
+            + ((try? FileManager.default.contentsOfDirectory(at: steamapps, includingPropertiesForKeys: nil)) ?? []).filter { $0.lastPathComponent.hasPrefix("appmanifest_") }
+        let stampNow = mtimes.map { (try? $0.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast }
+        if stampNow == scanStamp { return }
+        scanStamp = stampNow
         let steam = steamapps.deletingLastPathComponent()
         let stamp = (try? steam.appendingPathComponent("appcache/appinfo.vdf").resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
         if stamp != ownedStamp { owned = SteamLibrary.owned(steamDir: steam); ownedStamp = stamp }
@@ -181,7 +188,8 @@ final class Games: ObservableObject {
                let img = CGImageSourceCreateImageAtIndex(src, 0, nil) {
                 self.artLock.lock(); self.art[k] = img; self.artLock.unlock()
                 self.onUpdate()
-            } else { self.loadArt(appid, kind, k, hosts: Array(hosts.dropFirst())) }
+            } else if hosts.count > 1 { self.loadArt(appid, kind, k, hosts: Array(hosts.dropFirst())) }
+            else { self.artLock.lock(); self.artLoading.remove(k); self.artLock.unlock() }   // every host failed: retry on a later draw
         }.resume()
     }
     private func fetchNews(_ ids: [String]) {
@@ -209,7 +217,7 @@ final class Games: ObservableObject {
     /// Every Wine call goes through the Sikarugir launcher: this engine only works with the environment it sets
     /// (msync, loader paths); a bare `wine` can't even spawn wineboot.
     @discardableResult
-    private func launcher(_ args: [String], wait: Bool = true) throws -> Process {
+    private func launcher(_ args: [String], wait: Bool = true, timeout: TimeInterval? = nil) throws -> Process {
         let p = Process()
         p.executableURL = Games.wrapper.appendingPathComponent("Contents/MacOS/launcher")
         p.arguments = args
@@ -217,7 +225,14 @@ final class Games: ObservableObject {
         if !FileManager.default.fileExists(atPath: log.path) { FileManager.default.createFile(atPath: log.path, contents: nil) }
         if let h = try? FileHandle(forWritingTo: log) { h.seekToEndOfFile(); p.standardOutput = h; p.standardError = h }
         try p.run()
-        if wait { p.waitUntilExit() }
+        if wait, let timeout {   // a hung Wine step must not stall setup forever
+            let done = DispatchSemaphore(value: 0)
+            p.terminationHandler = { _ in done.signal() }
+            if done.wait(timeout: .now() + timeout) == .timedOut {
+                p.terminate()
+                throw NSError(domain: "VR4Mac", code: 6, userInfo: [NSLocalizedDescriptionKey: "\(args.first ?? "Wine") timed out"])
+            }
+        } else if wait { p.waitUntilExit() }
         return p
     }
 
@@ -272,7 +287,7 @@ final class Games: ObservableObject {
         try ensureEngine()
         if !fm.fileExists(atPath: prefix.appendingPathComponent("system.reg").path) {
             say("Creating the Windows bottle…")
-            try launcher(["WSS-wineprefixcreate"])
+            try launcher(["WSS-wineprefixcreate"], timeout: 10 * 60)
         }
         if !fm.fileExists(atPath: steamExe.path) {
             say("Installing Steam into the Wine bottle…")
@@ -280,7 +295,21 @@ final class Games: ObservableObject {
             if !fm.fileExists(atPath: setup.path) {
                 try Data(contentsOf: URL(string: "https://cdn.cloudflare.steamstatic.com/client/installer/SteamSetup.exe")!).write(to: setup)
             }
-            try launcher(["WSS-installer", setup.path, "/S"])
+            // The launcher mangles arguments (and Application Support has a space), so the installer used to never start:
+            // copy it into the bottle and run it from a .bat, like every other Wine command here. Then wait for steam.exe.
+            try fm.createDirectory(at: vrDir, withIntermediateDirectories: true)
+            let inBottle = vrDir.appendingPathComponent("SteamSetup.exe")
+            try? fm.removeItem(at: inBottle); try fm.copyItem(at: setup, to: inBottle)
+            let bat = vrDir.appendingPathComponent("install_steam.bat")
+            try "@echo off\r\nstart /wait \"\" \"C:\\VR4Mac\\SteamSetup.exe\" /S\r\n".write(to: bat, atomically: true, encoding: .utf8)
+            try launcher([bat.path], timeout: 15 * 60)
+            for _ in 0..<120 where !fm.fileExists(atPath: steamExe.path) { Thread.sleep(forTimeInterval: 1) }   // the bat can return early
+            try? fm.removeItem(at: inBottle)
+            guard fm.fileExists(atPath: steamExe.path) else {   // was reported as success before; say what went wrong instead
+                try? fm.removeItem(at: setup)   // a partial download is retried next time
+                throw NSError(domain: "VR4Mac", code: 7, userInfo: [NSLocalizedDescriptionKey:
+                    "Steam didn't install. Check your internet connection, then reopen MacVR to try again."])
+            }
         }
         try fm.createDirectory(at: vrDir, withIntermediateDirectories: true)
 
@@ -310,7 +339,7 @@ final class Games: ObservableObject {
             try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
             try client.write(to: destination, options: .atomic)
         }
-        for user in (try? fm.contentsOfDirectory(atPath: prefix.appendingPathComponent("drive_c/users").path)) ?? [] where user != "Public" {
+        for user in bottleUsers {
             let d = prefix.appendingPathComponent("drive_c/users/\(user)/AppData/Local/openvr")
             try fm.createDirectory(at: d, withIntermediateDirectories: true)
             try #"{"config":["C:\\VR4Mac\\config"],"external_drivers":null,"jsonid":"vrpathreg","log":["C:\\VR4Mac\\logs"],"runtime":["C:\\VR4Mac\\OpenComposite"],"version":1}"#
@@ -373,19 +402,27 @@ final class Games: ObservableObject {
     /// throws, and startup dies before the first scene (black screen). Seed them with empty JSON; the game fills them in.
     /// ponytail: per-game list; generalise if other Unity games hit the same Mono/Wine file-exists bug.
     private func seedSaveFiles() {
-        let dir = prefix.appendingPathComponent("drive_c/users/Sikarugir/AppData/LocalLow/Hyperbolic Magnetism/Beat Saber")
+        for user in bottleUsers {
+        let dir = prefix.appendingPathComponent("drive_c/users/\(user)/AppData/LocalLow/Hyperbolic Magnetism/Beat Saber")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         for f in ["settings.ini", "LocalLeaderboards.dat", "LocalDailyLeaderboards.dat", "PlayerData.dat", "AvatarData.dat",
                   "ControllerProfiles.dat", "ScoresToUpload.dat", "MainSettings.json", "GraphicsSettings.json"] {
             let u = dir.appendingPathComponent(f)
             if !FileManager.default.fileExists(atPath: u.path) { try? Data("{}".utf8).write(to: u) }
         }
+        }
+    }
+    /// Windows user profiles in the bottle (the wrapper names its user after itself; other Wine setups use the Mac name).
+    private var bottleUsers: [String] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: prefix.appendingPathComponent("drive_c/users").path)) ?? [])
+            .filter { $0 != "Public" && !$0.hasPrefix(".") }
     }
 
     /// One-time "Mac performance" presets for GPU-heavy games (the M-series GPU runs D3D11 through D3DMetal). Applied once
     /// per game (marker in Application Support), so later in-game changes are the player's. BONELAB: 30 -> ~50 fps.
     private func applyPerformancePresets() {
-        let bonelab = prefix.appendingPathComponent("drive_c/users/Sikarugir/AppData/LocalLow/Stress Level Zero/BONELAB/settings.json")
+        guard let bonelab = bottleUsers.map({ prefix.appendingPathComponent("drive_c/users/\($0)/AppData/LocalLow/Stress Level Zero/BONELAB/settings.json") })
+            .first(where: { FileManager.default.fileExists(atPath: $0.path) }) else { return }
         let mark = appSupport.appendingPathComponent("preset-bonelab")
         guard !FileManager.default.fileExists(atPath: mark.path), !isGameRunning("BONELAB"),   // the game rewrites it on exit
               let d = try? Data(contentsOf: bonelab), var j = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
@@ -404,20 +441,28 @@ final class Games: ObservableObject {
 
     /// Quit the running game only (every game runs from steamapps\common); Steam keeps running.
     func quitGame() {
-        let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/pkill"); p.arguments = ["-f", #"steamapps\\common\\"#]
+        let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/pkill"); p.arguments = ["-f", "steamapps/common/"]
         try? p.run()
     }
 
     /// Power button: kill everything running in the bottle.
     func stop() { _ = try? launcher(["WSS-wineserverkill"], wait: false) }
 
-    /// OpenXR loader finds our runtime via HKLM\SOFTWARE\Khronos\OpenXR\1\ActiveRuntime. Written straight into the
-    /// bottle's registry file (Wine's text format); ponytail: only safe while the bottle isn't running, so skip if it is.
+    /// OpenXR loader finds our runtime via HKLM\SOFTWARE\Khronos\OpenXR\1\ActiveRuntime. With the bottle stopped it is
+    /// written straight into system.reg (Wine's text format, instant); while it runs (Steam usually is, e.g. right after
+    /// first-run install) the file belongs to wineserver, so `reg add` goes through Wine instead. It used to be skipped
+    /// then, leaving fresh installs without a runtime until the bottle happened to be stopped at a later launch.
     private func registerRuntime() throws {
         let reg = prefix.appendingPathComponent("system.reg")
         var text = try String(contentsOf: reg, encoding: .utf8)
         guard !text.contains(#"[Software\\Khronos\\OpenXR\\1]"#) else { return }
-        guard !isBottleRunning() else { return }   // next setup() will add it
+        if isBottleRunning() {
+            let bat = vrDir.appendingPathComponent("register_runtime.bat")
+            try #"@echo off\#r\#nreg add "HKLM\SOFTWARE\Khronos\OpenXR\1" /v ActiveRuntime /t REG_SZ /d "C:\VR4Mac\vr4mac_openxr.json" /f\#r\#n"#
+                .write(to: bat, atomically: true, encoding: .utf8)
+            try launcher([bat.path], timeout: 60)
+            return
+        }
         text += "\n" + #"[Software\\Khronos\\OpenXR\\1] 1790000000"# + "\n" + #""ActiveRuntime"="C:\\VR4Mac\\vr4mac_openxr.json""# + "\n"
         try text.write(to: reg, atomically: true, encoding: .utf8)
     }

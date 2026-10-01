@@ -101,6 +101,8 @@ final class Dashboard {
     private var lastDesktopUV: CGPoint?
     var grabbing: String?                 // grab bar held (Engine sets/clears), keeps it highlighted
     private var pressed: (String, CFTimeInterval)?, inPress = false, navved = false
+    private let solidLock = NSLock()
+    private var solidState = (true, false)   // (windowOpen, keyboardOpen) as of the last draw
     /// The control was just clicked: shows a brief depressed state (a fraction of a second).
     private func isPressed(_ id: String) -> Bool { pressed.map { $0.0 == id && CACurrentMediaTime() - $0.1 < 0.12 } ?? false }
 
@@ -135,8 +137,10 @@ final class Dashboard {
     private func region(_ uv: CGPoint) -> Region? { let p = px(uv); return regions.last { $0.r.contains(p) } }
 
     /// True where the menu is opaque (window, bars, dock, open keyboard); lasers pass through the transparent gaps.
+    /// Called on the render queue (laser hit tests) while the menu draws on its own: reads a snapshot taken after each draw.
     func solid(_ uv: CGPoint) -> Bool {
         let p = px(uv)
+        solidLock.lock(); let (windowOpen, keyboardOpen) = solidState; solidLock.unlock()
         return windowOpen && (Dashboard.WIN.contains(p) || Dashboard.GRAB.contains(p) || Dashboard.dotRect(Dashboard.GRAB).contains(p))
             || Dashboard.DOCK.contains(p) || Dashboard.DOCKGRAB.contains(p) || Dashboard.dotRect(Dashboard.DOCKGRAB).contains(p)
             || (keyboardOpen && (Dashboard.KB.contains(p) || Dashboard.KBGRAB.contains(p) || Dashboard.dotRect(Dashboard.KBGRAB).contains(p)))
@@ -753,7 +757,10 @@ final class Dashboard {
     private func drawQuick() {
         let c = Dashboard.content
         let envs = Settings.items["environment"]!.options
-        var shortcuts: [(String, String, String, Bool, () -> Void)] = [
+        var shortcuts: [(String, String, String, Bool, () -> Void)] = gameActive ? [
+            ("q:resume", "play", "Resume", false, { [unowned self] in close() }),   // straight back into the game
+        ] : []
+        shortcuts += [
             ("q:recenter", "recenter", "Recenter", false, { [unowned self] in recenter(); note("View recentered") }),
             ("q:theater", "theater", "Theater", theaterOn, { [unowned self] in theater(!theaterOn) }),
             ("q:desktop", "monitor", "Mac Desktop", false, { [unowned self] in nav("desktop") }),
@@ -761,12 +768,15 @@ final class Dashboard {
                 let i = ((envs.firstIndex(of: settings["environment"]) ?? 0) + 1) % envs.count
                 settings.set("environment", envs[i]); sounds.play("env") }),
         ]
-        if gameActive && settings.bool("show_power") { shortcuts.append(("q:quit", "power", "Quit Game", false, { [unowned self] in power() })) }
-        let d: CGFloat = 150, gap: CGFloat = 90, total = CGFloat(shortcuts.count) * d + CGFloat(shortcuts.count - 1) * gap
+        shortcuts.append(("q:mic", "mic", "Headset Mic", Mic.shared.useHeadset, { [unowned self] in   // one tap: talk in games through the headset
+            Mic.shared.choice = Mic.shared.useHeadset ? "" : Mic.headset
+            note(Mic.shared.useHeadset ? "Headset mic on" : "Headset mic off"); sounds.play(Mic.shared.useHeadset ? "on" : "off") }))
+        if gameActive { shortcuts.append(("q:quit", "power", "Quit Game", false, { [unowned self] in power() })) }
+        let d: CGFloat = 150, gap: CGFloat = shortcuts.count > 5 ? 60 : 90, total = CGFloat(shortcuts.count) * d + CGFloat(shortcuts.count - 1) * gap
         for (i, (id, ic, label, on, fn)) in shortcuts.enumerated() {
             let r = CGRect(x: c.midX - total / 2 + CGFloat(i) * (d + gap), y: c.minY + 20, width: d, height: d)
             let h = btn(id, r) { [unowned self] in fn(); redraw() }
-            rr(h ? r.insetBy(dx: -6, dy: -6) : r, d / 2 + 6, on ? 0x2d8cffff : h ? 0x4a5462ff : 0x353d49ff)
+            rr(r, d / 2, isPressed(id) ? 0x2a313aff : on ? 0x2d8cffff : h ? 0x4a5462ff : 0x353d49ff)
             icon(ic, r.midX, r.midY, 0xffffffff, 1.7)
             txt(label, r.midX, r.maxY + 50, 28, h ? 0xffffffff : 0xc9cfd8ff, align: 0.5, maxW: d + gap - 10)
         }
@@ -1099,6 +1109,7 @@ final class Dashboard {
     }
 
     func draw() {
+        defer { solidLock.lock(); solidState = (windowOpen, keyboardOpen); solidLock.unlock() }
         regions = []
         ctx.clear(CGRect(x: 0, y: 0, width: Dashboard.W, height: Dashboard.H))
         if view == "settings" && !settings.bool("show_settings_tab") || view == "desktop" && !settings.bool("show_desktop_tabs")

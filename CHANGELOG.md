@@ -1,6 +1,14 @@
 # Changes
 
-## Unreleased
+## 1.1.0
+
+- Quick Settings: Resume and Quit Game tiles while a game runs, and a one-tap Headset Mic tile.
+- Fixes:
+  - The OpenXR runtime now registers while Wine is running. Fresh installs used to miss it until the bottle was stopped.
+  - Quit Game now actually quits.
+  - HEVC falls back to H.264 when the encoder can't start, instead of streaming black.
+  - A hung adb no longer blocks Retry USB.
+  - Several crash and thread-safety fixes, plus cheaper library rescans.
 
 - Microphones: Settings > Audio > Microphone picks any Mac mic or the headset's own mic. Games record from the chosen one.
   - The headset mic reaches games through "MacVR Headset Mic", a small loopback audio driver.

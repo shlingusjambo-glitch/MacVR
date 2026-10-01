@@ -657,9 +657,13 @@ final class DesktopCapture: NSObject, SCStreamOutput {
     var latest: CVPixelBuffer? { lock.lock(); defer { lock.unlock() }; return _latest }
     var running: Bool { stream != nil }
 
+    private var starting = false, generation = 0
     func start() {
-        guard stream == nil else { return }
+        guard stream == nil, !starting else { return }
+        starting = true; generation += 1
+        let gen = generation
         Task {
+            defer { DispatchQueue.main.async { self.starting = false } }
             guard let content = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true),
                   let display = content.displays.first else { return }
             let cfg = SCStreamConfiguration()
@@ -671,10 +675,14 @@ final class DesktopCapture: NSObject, SCStreamOutput {
             cfg.minimumFrameInterval = CMTime(value: 1, timescale: 60)
             let s = SCStream(filter: SCContentFilter(display: display, excludingWindows: []), configuration: cfg, delegate: nil)
             try? s.addStreamOutput(self, type: .screen, sampleHandlerQueue: DispatchQueue(label: "vr4.capture"))
-            do { try await s.startCapture(); stream = s } catch { NSLog("screen capture failed: \(error)") }
+            do {
+                try await s.startCapture()
+                if gen == generation { stream = s } else { try? await s.stopCapture() }   // stopped while starting
+            } catch { NSLog("screen capture failed: \(error)") }
         }
     }
     func stop() {
+        generation += 1
         stream?.stopCapture { _ in }
         stream = nil
         lock.lock(); _latest = nil; lock.unlock()

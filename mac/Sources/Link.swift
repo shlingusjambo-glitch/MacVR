@@ -164,6 +164,8 @@ let adbPath = ["/opt/homebrew/bin/adb", NSHomeDirectory() + "/Library/Android/sd
     p.arguments = ["reverse", "tcp:\(VR4_PORT_TCP)", "tcp:\(VR4_PORT_TCP)"]
     p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
     guard (try? p.run()) != nil else { return false }
-    p.waitUntilExit()
+    let done = DispatchSemaphore(value: 0)
+    p.terminationHandler = { _ in done.signal() }
+    if done.wait(timeout: .now() + 8) == .timedOut { p.terminate(); return false }   // unauthorized/hung adb: don't block Retry USB forever
     return p.terminationStatus == 0
 }

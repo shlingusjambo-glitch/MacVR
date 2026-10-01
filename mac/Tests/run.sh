@@ -8,6 +8,6 @@
 set -e
 cd "$(dirname "$0")/.."
 swiftc -O Tests/main.swift Sources/Dashboard.swift Sources/UISounds.swift \
-    Sources/ControllerModels.swift Sources/ControllerGLB.swift Sources/Settings.swift Sources/Games.swift Sources/SteamLibrary.swift \
+    Sources/ControllerModels.swift Sources/ControllerGLB.swift Sources/Settings.swift Sources/Games.swift Sources/SteamLibrary.swift Sources/Mic.swift \
     -o /tmp/vr4mac-dashtest
 /tmp/vr4mac-dashtest

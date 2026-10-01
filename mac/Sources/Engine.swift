@@ -80,7 +80,7 @@ final class Engine: ObservableObject {
 
     /// UI sounds -> 48 kHz stereo, summed into the pending headset mix (44.1 kHz WAVs from UISounds, linear resample).
     private func pullUISounds() {
-        for wav in UISounds.shared.takePending() where wav.count > 44 {
+        for wav in UISounds.shared.takePending() where wav.count >= 44 + 8 {   // at least 2 stereo frames (interpolation reads i+1)
             wav.withUnsafeBytes { b in
                 let src = b.baseAddress!.advanced(by: 44).assumingMemoryBound(to: Int16.self), n = (wav.count - 44) / 4
                 let out = n * 48_000 / 44_100
@@ -195,20 +195,25 @@ final class Engine: ObservableObject {
             UISounds.shared.headsetOnly = false
             DispatchQueue.main.async { self?.connected = false; self?.hands = (false, false); self?.streamInfo = "" }
         }
-        encoder.onFrame = { [weak self] data, idr, t in
-            guard let self else { return }
-            self.stat.encoded += 1
-            self.frameId += 1
-            var h = VR4VideoHeader(frame_id: self.frameId, time_ns: t, flags: idr ? 1 : 0)
-            var d = Data(bytes: &h, count: MemoryLayout<VR4VideoHeader>.size)
-            d.append(data)
-            self.link.send(Int32(VR4_VIDEO), d)
+        encoder.onFrame = { [weak self] data, idr, t in   // VideoToolbox thread: counters live on rq
+            self?.rq.async { [weak self] in
+                guard let self else { return }
+                self.stat.encoded += 1
+                self.frameId += 1
+                var h = VR4VideoHeader(frame_id: self.frameId, time_ns: t, flags: idr ? 1 : 0)
+                var d = Data(bytes: &h, count: MemoryLayout<VR4VideoHeader>.size)
+                d.append(data)
+                self.link.send(Int32(VR4_VIDEO), d)
+            }
         }
         gameSeq = shm.p.pointee.frame_seq   // frames left over from an earlier run are not a running game
         games.scan()
         DispatchQueue.global(qos: .utility).async { [weak self] in   // install/refresh runtime, OpenComposite and game fixes at startup
             SiliconXR.install()   // VR for native Mac games (OpenXR + Vivecraft); independent of the Wine setup below
-            do { try self?.games.setup() } catch { NSLog("VR4Mac: setup failed: \(error)") }
+            do { try self?.games.setup() } catch {   // shown in the status window, not just the log
+                NSLog("VR4Mac: setup failed: \(error)")
+                DispatchQueue.main.async { self?.games.status = "Setup failed: \(error.localizedDescription)" }
+            }
         }
         link.start()
         rq.async { self.applySettings() }
@@ -369,9 +374,13 @@ final class Engine: ObservableObject {
             eyeW = (eyeW * 15 / 16) / 32 * 32; eyeH = (eyeH * 15 / 16) / 32 * 32
         }
         helloMic = j["mic"] as? Bool == true
+        // encoder first: CONFIG must name a codec that actually started (HEVC falls back to H.264), or the headset waits on a black stream
+        if !encoder.configure(width: eyeW * 2, height: eyeH, fps: fps, mbps: mbps, maxQP: (link.wired ? 23 : 30) + (useHEVC ? 4 : 0), hevc: useHEVC), useHEVC {
+            useHEVC = false
+            encoder.configure(width: eyeW * 2, height: eyeH, fps: fps, mbps: mbps, maxQP: link.wired ? 23 : 30, hevc: false)
+        }
         config = ["eye_w": eyeW, "eye_h": eyeH, "fps": fps, "codec": useHEVC ? "hevc" : "h264"]
         sendConfig()
-        encoder.configure(width: eyeW * 2, height: eyeH, fps: fps, mbps: mbps, maxQP: (link.wired ? 23 : 30) + (useHEVC ? 4 : 0), hevc: useHEVC)
         NSLog("VR4Mac: %@ connected %@, %dx%d per eye @ %d Hz, %d Mbps", j["device"] as? String ?? "Quest", link.wired ? "over USB" : "over Wi-Fi", eyeW, eyeH, fps, mbps)
         let s = shm.p
         s.pointee.eye_w = UInt32(eyeW); s.pointee.eye_h = UInt32(eyeH); s.pointee.fps = Float(fps); s.pointee.client_connected = 1
