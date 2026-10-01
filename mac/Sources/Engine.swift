@@ -309,7 +309,7 @@ final class Engine: ObservableObject {
     private func applySettings() {
         applyControllers()
         comp.setRadius(["NEAR": 1.3, "MIDDLE": 1.8, "FAR": 2.5][settings["dashboard_position"]] ?? 1.3)
-        comp.setEnvironment(settings["environment"])
+        comp.setEnvironment(ProcessInfo.processInfo.environment["VR4_ENV"] ?? settings["environment"])   // VR4_ENV: README renders
         comp.setCurved(settings.bool("ui_curved"))
         comp.setGrid(settings.bool("floor_grid"))
         if eyeW > 0 { encoder.configure(width: eyeW * 2, height: eyeH, fps: fps, mbps: mbps, maxQP: (link.wired ? 23 : 30) + (useHEVC ? 4 : 0), hevc: useHEVC) }
@@ -541,13 +541,17 @@ final class Engine: ObservableObject {
     // MARK: self-test: render one frame with a fake headset pose, save PNG, encode, check NAL types
     func snapshot(to path: String) {
         let hevc = ProcessInfo.processInfo.environment["VR4_HEVC"] == "1"
-        hello(["eye_w": 1024, "eye_h": 1024, "device": "Test", "codecs": hevc ? ["hevc", "h264"] : ["h264"]])
-        let fov = VR4Fov(left: -0.8, right: 0.8, up: 0.8, down: -0.8)
+        let readme = ProcessInfo.processInfo.environment["VR4_README"] == "1"   // one wide eye, no controller
+        hello(["eye_w": readme ? 1920 : 1024, "eye_h": readme ? 1250 : 1024, "device": "Test", "codecs": hevc ? ["hevc", "h264"] : ["h264"]])
+        let fov = readme ? VR4Fov(left: -0.6, right: 0.6, up: 0.3, down: -0.5) : VR4Fov(left: -0.8, right: 0.8, up: 0.8, down: -0.8)
         func pose(_ x: Float, _ y: Float, _ z: Float) -> VR4Pose { VR4Pose(px: x, py: y, pz: z, qx: 0, qy: 0, qz: 0, qw: 1) }
         let aimDown = simd_quatf(angle: -0.25, axis: SIMD3(1, 0, 0))
-        var hand = VR4Hand(flags: 3, buttons: 0, aim: pose(0.2, 1.3, -0.3), grip: pose(0.2, 1.3, -0.3), trigger: 0, squeeze: 0, stick_x: 0, stick_y: 0)
+        var hand = VR4Hand(flags: readme ? 0 : 3, buttons: 0, aim: pose(0.2, 1.3, -0.3), grip: pose(0.2, 1.3, -0.3), trigger: 0, squeeze: 0, stick_x: 0, stick_y: 0)
         hand.aim.qx = aimDown.imag.x; hand.aim.qw = aimDown.real
-        let t = VR4Tracking(time_ns: 1, head: pose(0, 1.6, 0), eye: (VR4Eye(pose: pose(-0.032, 1.6, 0), fov: fov), VR4Eye(pose: pose(0.032, 1.6, 0), fov: fov)),
+        let pitch = simd_quatf(angle: Float(ProcessInfo.processInfo.environment["VR4_PITCH"] ?? "0") ?? 0, axis: SIMD3(1, 0, 0))   // README renders
+        let back: Float = readme ? 0.55 : 0
+        func look(_ x: Float) -> VR4Pose { var p = pose(x, 1.6, back); p.qx = pitch.imag.x; p.qw = pitch.real; return p }
+        let t = VR4Tracking(time_ns: 1, head: look(0), eye: (VR4Eye(pose: look(-0.032), fov: fov), VR4Eye(pose: look(0.032), fov: fov)),
                             hand: (VR4Hand(), hand))
         var nals: [UInt8] = []
         let done = DispatchSemaphore(value: 0)
@@ -562,13 +566,17 @@ final class Engine: ObservableObject {
             dq.sync { dash.testTourStep(st) }; dq.sync {}; dq.sync {}
             Thread.sleep(forTimeInterval: Double(ProcessInfo.processInfo.environment["VR4_SNAP_WAIT"] ?? "2.2") ?? 2.2)
         }
+        if let v = ProcessInfo.processInfo.environment["VR4_VIEW"] { dq.sync { dash.view = v }; requestDraw(); Thread.sleep(forTimeInterval: 0.6) }   // README renders
         if let h = ProcessInfo.processInfo.environment["VR4_HOVER"]?.split(separator: ",").compactMap({ Double($0) }), h.count == 2 {   // canvas px
             dq.sync { _ = dash.pointer(CGPoint(x: h[0] / Double(Dashboard.W), y: h[1] / Double(Dashboard.H))) }; requestDraw()
         }
         Thread.sleep(forTimeInterval: 0.4)   // let window pop-in animations settle
+        dq.sync {}; dq.sync {}
+        rq.sync {}   // finish selected view's texture and dock/keyboard updates before capture
+        Thread.sleep(forTimeInterval: 0.4)
         rq.sync {
             guard let pb = comp.render(t, eyeW: eyeW, eyeH: eyeH) else { print("render failed"); exit(1) }
-            let ci = CIImage(cvPixelBuffer: pb)
+            let full = CIImage(cvPixelBuffer: pb), ci = readme ? full.cropped(to: CGRect(x: 0, y: 0, width: full.extent.width / 2, height: full.extent.height)) : full
             let rep = NSBitmapImageRep(ciImage: ci)
             try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
         }

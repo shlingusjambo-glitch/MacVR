@@ -5,16 +5,25 @@ MacVR streams Windows VR games running under Wine/Steam to a Meta Quest 1/2/3
 Universal Menu over your game: dock, quick settings, desktop control, and a
 pop-up keyboard.
 
-![MacVR OS in-headset](docs/screenshots/in-headset.png)
-![Game library](docs/screenshots/app-library.png)
-![Quick settings](docs/screenshots/quick-settings.png)
-![Welcome tour](docs/screenshots/welcome-tour.png)
-![Pop-up keyboard](docs/screenshots/keyboard.png)
-![Settings](docs/screenshots/settings.png)
+<p align="center">
+  <img src="docs/screenshots/in-headset.png" alt="MacVR OS app library and floating dock in the current home environment" width="100%">
+</p>
 
-> Screenshots are rendered from the real MacVR OS shell. Before publishing,
-> re-render `app-library`/`keyboard` with a demo library if the real Steam
-> library and dock avatar initial should stay private.
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/welcome-tour.png" alt="Welcome tour with a 3D controller and highlighted trigger"><br><strong>Learn the controls</strong> — guided setup with a live controller model.</td>
+    <td width="50%"><img src="docs/screenshots/quick-settings.png" alt="Quick Settings with four shortcuts, volume and brightness"><br><strong>Quick Settings</strong> — shortcuts and adjustments within reach.</td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/app-library.png" alt="Current app library with Desktop, Steam, Theater and built-in apps"><br><strong>App library</strong> — Steam, desktop, theater and built-in apps.</td>
+    <td><img src="docs/screenshots/settings.png" alt="Settings sidebar and headset display controls"><br><strong>Settings</strong> — display, controllers, audio and environments.</td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center"><img src="docs/screenshots/keyboard.png" alt="Floating keyboard with its grab bar beneath the dock" width="70%"><br><strong>Floating keyboard</strong> — type and move the keyboard where you want it.</td>
+  </tr>
+</table>
+
+Screenshots rendered from the current MacVR OS shell.
 
 ## What it is
 
