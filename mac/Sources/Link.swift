@@ -7,6 +7,7 @@ final class Link {
     var onTracking: (VR4Tracking) -> Void = { _ in }
     var onRequestIDR: () -> Void = {}
     var onDisconnect: () -> Void = {}
+    var onIssue: (String) -> Void = { _ in }
     private(set) var connected = false
     private(set) var peer = ""
     /// USB: the Quest reaches us through adb reverse, so the peer is loopback.
@@ -15,18 +16,36 @@ final class Link {
     private var inFlight = 0
     private let q = DispatchQueue(label: "vr4.link")
     private var listener: NWListener?
+    private let usbQueue = DispatchQueue(label: "vr4.usb", qos: .utility)
+    private var usbPending = false
+    private let port: UInt16
 
-    func start() {
+    init(port: UInt16 = UInt16(VR4_PORT_TCP)) { self.port = port }
+
+    func start(discovery: Bool = true) {
         let tcp = NWProtocolTCP.Options(); tcp.noDelay = true
-        listener = try? NWListener(using: NWParameters(tls: nil, tcp: tcp), on: NWEndpoint.Port(rawValue: UInt16(VR4_PORT_TCP))!)
+        do {
+            listener = try NWListener(using: NWParameters(tls: nil, tcp: tcp), on: NWEndpoint.Port(rawValue: port)!)
+        } catch {
+            onIssue("Cannot listen for a headset: \(error.localizedDescription). Close other MacVR instances and reopen the app.")
+            return
+        }
+        listener?.stateUpdateHandler = { [weak self] state in
+            switch state {
+            case .ready: self?.onIssue("")
+            case .failed(let error): self?.onIssue("Headset connection unavailable: \(error.localizedDescription). Close other MacVR instances and reopen the app.")
+            default: break
+            }
+        }
         listener?.newConnectionHandler = { [weak self] c in self?.accept(c) }
         listener?.start(queue: q)
+        guard discovery else { return }
         let t = DispatchSource.makeTimerSource(queue: q)
         t.schedule(deadline: .now(), repeating: 1)
         var n = 0
         t.setEventHandler { [weak self] in
             self?.broadcast()
-            if n % 5 == 0, self?.connected == false { adbReverse() }
+            if n % 5 == 0, self?.connected == false { self?.retryUSB() }
             n += 1
         }
         t.resume()
@@ -34,15 +53,31 @@ final class Link {
     }
     private var timer: DispatchSourceTimer?
 
+    /// adb can block on USB authorization; keep it off the packet/connection queue.
+    func retryUSB() {
+        q.async { [weak self] in
+            guard let self, !self.usbPending else { return }
+            self.usbPending = true
+            self.usbQueue.async { [weak self] in
+                _ = adbReverse()
+                self?.q.async { self?.usbPending = false }
+            }
+        }
+    }
+
     private func accept(_ c: NWConnection) {
-        conn?.cancel()
+        if let previous = conn {
+            previous.cancel()
+            onDisconnect()
+        }
+        connected = false
         conn = c; inFlight = 0
         if case .hostPort(let h, _) = c.endpoint { peer = "\(h)" }
         c.stateUpdateHandler = { [weak self, weak c] s in
             guard let self, let c, c === self.conn else { return }
             switch s {
-            case .ready: self.connected = true
-            case .failed, .cancelled: self.connected = false; self.conn = nil; self.onDisconnect()
+            case .ready: self.connected = true; self.onIssue("")
+            case .failed, .cancelled: self.connected = false; self.conn = nil; self.inFlight = 0; self.peer = ""; self.onDisconnect()
             default: break
             }
         }
@@ -57,7 +92,8 @@ final class Link {
             guard len <= Int(VR4_MAX_PAYLOAD) else { c.cancel(); return }
             let handle = { (body: Data) in
                 guard c === self.conn else { return }   // stale connection replaced by a newer one
-                self.handle(type, body); if !done { self.readPacket(c) }
+                self.handle(type, body)
+                if done { c.cancel() } else { self.readPacket(c) }
             }
             if len == 0 { handle(Data()); return }
             c.receive(minimumIncompleteLength: len, maximumLength: len) { b, _, _, err in
@@ -87,7 +123,11 @@ final class Link {
         q.async { [self] in
             guard let c = conn else { return }
             inFlight += 1
-            c.send(content: d, completion: .contentProcessed { [weak self] _ in self?.inFlight -= 1 })
+            c.send(content: d, completion: .contentProcessed { [weak self, weak c] error in
+                guard let self, let c, c === self.conn else { return }
+                self.inFlight = max(0, self.inFlight - 1)
+                if error != nil { c.cancel() }
+            })
         }
     }
 

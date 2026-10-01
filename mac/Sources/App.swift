@@ -133,6 +133,14 @@ struct StatusBody: View {
                     HStack(spacing: 10) {
                         controller("Left", e.hands.0); controller("Right", e.hands.1)
                     }.padding(.top, 12)
+                } else {
+                    Text(e.connectionIssue.isEmpty
+                         ? "USB: unlock your headset and allow USB debugging. Wi-Fi: connect both devices to the same network."
+                         : e.connectionIssue)
+                        .font(.system(size: 11)).foregroundColor(e.connectionIssue.isEmpty ? OS.dim : .orange)
+                        .fixedSize(horizontal: false, vertical: true).padding(.top, 10)
+                    PillButton(title: "Retry USB connection", symbol: "arrow.clockwise") { e.link.retryUSB() }
+                        .padding(.top, 10)
                 }
             }
 
@@ -388,7 +396,7 @@ struct GamesCard: View {
                 }.font(.system(size: 12))
             }
         }
-        Text("Applied the next time the game starts.").font(.system(size: 11)).foregroundColor(OS.dim)
+        Text("World scale updates live for the running game. Restart the game to apply resolution or Theater defaults.").font(.system(size: 11)).foregroundColor(OS.dim)
     }
     private func pick(_ g: Game, _ key: String, _ label: String, _ opts: [Int]) -> some View {
         Picker(label, selection: Binding(get: { Dashboard.override(g.appid, key) }, set: { Dashboard.setOverride(g.appid, key, $0); tick.bump() })) {

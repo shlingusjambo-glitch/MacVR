@@ -38,13 +38,19 @@ final class Engine: ObservableObject {
     private var _viewFrame: CVPixelBuffer?
     /// Latest side-by-side frame sent to the headset (for the VR View window).
     var viewFrame: CVPixelBuffer? { viewLock.lock(); defer { viewLock.unlock() }; return _viewFrame }
-    private func setViewFrame(_ pb: CVPixelBuffer) { viewLock.lock(); _viewFrame = pb; viewLock.unlock() }
+    private func setViewFrame(_ pb: CVPixelBuffer?) { viewLock.lock(); _viewFrame = pb; viewLock.unlock() }
 
     @Published var connected = false
     @Published var device = ""
     @Published var hands = (false, false)
     @Published var nowPlaying = ""
     @Published var streamInfo = ""   // e.g. "USB · 2432x1344 @ 72 Hz" for the Mac window
+    @Published var connectionIssue = ""
+    private lazy var gameOverrides = GameOverrides { [weak self] render, world in
+        self?.shm.p.pointee.render_scale = render
+        self?.shm.p.pointee.world_scale = world
+    }
+    private var overrideObserver: NSObjectProtocol?
 
     /// Settings > About on the Mac: show the welcome tour in the headset again.
     func replayTour() { dq.async { [self] in dash.startTutorial(); rq.async { self.setMenu(true) } } }
@@ -101,14 +107,22 @@ final class Engine: ObservableObject {
 
     init() {
         dash = Dashboard(settings: settings, games: games)
+        overrideObserver = NotificationCenter.default.addObserver(forName: Dashboard.overrideChanged, object: nil, queue: nil) { [weak self] note in
+            guard let appid = note.userInfo?["appid"] as? String, let key = note.userInfo?["key"] as? String else { return }
+            self?.rq.async { [weak self] in
+                self?.gameOverrides.changed(appid, key: key)
+            }
+        }
         settings.onChange = { [weak self] in self?.rq.async { self?.applySettings() } }
         games.onUpdate = { [weak self] in self?.requestDraw() }
         dash.launch = { [weak self] g in
             guard let self else { return }
             // per-game overrides for the runtime (0 = default): render resolution and world scale
-            shm.p.pointee.render_scale = Float(Dashboard.override(g.appid, "render")) / 100
-            shm.p.pointee.world_scale = Float(Dashboard.override(g.appid, "world")) / 100
-            games.launch(g); dash.note("Launching \(g.name)…", 4)
+            rq.async { [self] in
+                self.gameOverrides.start(g.appid)
+                self.games.launch(g)
+            }
+            dash.note("Launching \(g.name)…", 4)
         }
         dash.power = { [weak self] in self?.games.quitGame(); self?.dash.note("Quitting game", 3) }
         dash.install = { [weak self] g in   // Steam asks to confirm on the Mac: show the desktop so it can be clicked in VR
@@ -143,6 +157,7 @@ final class Engine: ObservableObject {
         dash.keyCode = { input.key(CGKeyCode($0)) }
         dash.setMacVolume = { v in DispatchQueue.global().async { Engine.appleScript("set volume output volume \(v)") } }
         link.onHello = { [weak self] j in self?.rq.async { self?.hello(j) } }
+        link.onIssue = { [weak self] message in DispatchQueue.main.async { self?.connectionIssue = message } }
         link.onTracking = { [weak self] t in self?.tracking(t) }
         link.onRequestIDR = { [weak self] in self?.encoder.forceIDR = true }
         audio.onChunk = { [weak self] pkt in
@@ -165,9 +180,16 @@ final class Engine: ObservableObject {
         link.onDisconnect = { [weak self] in
             DesktopInput.shared.releaseAll()
             self?.shm.p.pointee.client_connected = 0
-            self?.rq.async { self?.audioEnabled = false; self?.audio.stop(); self?.uiQueue = [] }
+            self?.rq.async { [weak self] in
+                guard let self else { return }
+                audioEnabled = false; audio.stop(); uiQueue = []
+                prevButtons = [0, 0]; prevTrigger = [false, false]; prevGrip = [false, false]
+                grabHand = nil; lastTrack = nil
+                desktop.stop(); setViewFrame(nil)
+                dq.async { [weak self] in self?.dash.release(nil); self?.dash.grabbing = nil; self?.requestDraw() }
+            }
             UISounds.shared.headsetOnly = false
-            DispatchQueue.main.async { self?.connected = false; self?.hands = (false, false) }
+            DispatchQueue.main.async { self?.connected = false; self?.hands = (false, false); self?.streamInfo = "" }
         }
         encoder.onFrame = { [weak self] data, idr, t in
             guard let self else { return }
@@ -389,14 +411,14 @@ final class Engine: ObservableObject {
         lastTrack = t
         guard eyeW > 0 else { return }
         let hs = [t.hand.0, t.hand.1]
-        let valid = hs.map { $0.flags & UInt32(VR4_HAND_ACTIVE) != 0 }
+        let valid = hs.map { $0.flags & UInt32(VR4_HAND_ACTIVE | VR4_HAND_POSE_VALID) == UInt32(VR4_HAND_ACTIVE | VR4_HAND_POSE_VALID) }
         if valid[0] != hands.0 || valid[1] != hands.1 { DispatchQueue.main.async { self.hands = (valid[0], valid[1]) } }
 
         // left ≡ (menu) opens/closes the menu like the Quest system button; B / Y too if enabled in Settings
         for i in 0..<2 {
             var mask = i == 0 ? UInt32(VR4_BTN_MENU) : 0
             if settings.bool("system_button") { mask |= UInt32(i == 0 ? VR4_BTN_Y : VR4_BTN_B) }
-            if hs[i].buttons & mask & ~prevButtons[i] != 0 {
+            if valid[i] && hs[i].buttons & mask & ~prevButtons[i] != 0 {
                 if dashView == "welcome" {   // the tour only ends on its last step, by pressing the menu button
                     if tourFinal { dq.async { [self] in dash.finishTutorial(); requestDraw() }; setMenu(false) }
                 } else { setMenu(!dashVisible) }
@@ -409,7 +431,8 @@ final class Engine: ObservableObject {
 
         // laser pointers: trigger press/hold/release, grip = secondary, stick = scroll (or push/pull while grabbing)
         var rays: [Float?] = [nil, nil]
-        let trig = hs.map { $0.trigger > (0.55) }, grip = hs.map { $0.squeeze > 0.7 }
+        let trig = (0..<2).map { valid[$0] && hs[$0].trigger > 0.55 }
+        let grip = (0..<2).map { valid[$0] && hs[$0].squeeze > 0.7 }
         if dashVisible {
             if let g = grabHand {
                 if valid[g] && trig[g] {
@@ -526,7 +549,7 @@ final class Engine: ObservableObject {
             send(pb, t)
         } else if gameActive && Date().timeIntervalSince(lastGameFrame) > 2 {
             gameActive = false; setMenu(true)
-            shm.p.pointee.render_scale = 0; shm.p.pointee.world_scale = 0   // per-game overrides end with the game
+            gameOverrides.stop()
             dq.async { [self] in dash.gameActive = false; dash.gameName = ""; requestDraw() }
             NSLog("VR4Mac: game stopped, back to home")
             DispatchQueue.main.async { self.nowPlaying = "" }

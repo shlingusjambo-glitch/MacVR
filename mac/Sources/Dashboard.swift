@@ -484,7 +484,11 @@ final class Dashboard {
     }
     /// Per-game overrides (0 = default): render resolution %, world scale %, always open in Theater.
     static func override(_ appid: String, _ key: String) -> Int { UserDefaults.standard.integer(forKey: "app.\(appid).\(key)") }
-    static func setOverride(_ appid: String, _ key: String, _ v: Int) { UserDefaults.standard.set(v, forKey: "app.\(appid).\(key)") }
+    static let overrideChanged = Notification.Name("MacVR.gameOverrideChanged")
+    static func setOverride(_ appid: String, _ key: String, _ v: Int) {
+        UserDefaults.standard.set(v, forKey: "app.\(appid).\(key)")
+        NotificationCenter.default.post(name: overrideChanged, object: nil, userInfo: ["appid": appid, "key": key])
+    }
     private var settingsFor: Game?
     private func start(_ g: Game) {
         if g.installed && Dashboard.override(g.appid, "theater") == 1 && !theaterOn { theater(true) }
@@ -899,7 +903,7 @@ final class Dashboard {
         cover(games.image(g.appid, "header"), CGRect(x: c.minX, y: c.minY, width: 420, height: 196), g.name, rad: 18)
         txt(g.name, c.minX + 460, c.minY + 70, 44, bold: true, maxW: c.width - 480)
         txt(g.vr ? "VR game" : "Flatscreen game: try Theater", c.minX + 460, c.minY + 120, 28, 0x9aa3afff)
-        txt("Applied the next time the game starts.", c.minX + 460, c.minY + 166, 26, 0x9aa3afff)
+        txt("World scale updates live. Resolution needs a restart.", c.minX + 460, c.minY + 166, 24, 0x9aa3afff)
         var y = c.minY + 250
         let rows: [(String, String, [Int])] = [("render", "Render Resolution", [0, 50, 75, 100, 125, 150]), ("world", "World Scale", [0, 50, 75, 100, 125, 150, 200])]
         for (key, label, opts) in rows {
