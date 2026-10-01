@@ -33,10 +33,12 @@ final class HandModel {
     /// Mesh space -> grip space for the left hand per controller mesh (the right hand is mirrored across grip x).
     /// Tuned so the palm sits on the outer side of each handle.
     typealias Placement = (pos: SIMD3<Float>, euler: SIMD3<Float>)
-    static var place: [HeadsetModel: Placement] = [
-        .quest1: (SIMD3(-0.034, 0.016, 0.03), SIMD3(0.9, .pi, 0)),
-        .quest2: (SIMD3(-0.034, 0.016, 0.03), SIMD3(0.9, .pi, 0)),
-        .quest3: (SIMD3(-0.034, 0.016, 0.03), SIMD3(0.9, .pi, 0)),
+    static var place: [HeadsetModel: Placement] = [   // fitted offline: palm on the handle, fingertips on its surface,
+        // index on the trigger, thumb able to reach the thumbrest, stick and both face buttons, least overlap,
+        // a straight index along the aim ray
+        .quest1: (SIMD3(-0.0458, 0.0121, 0.0337), SIMD3(0.4, 3.2316, 0.3225)),
+        .quest2: (SIMD3(-0.0344, 0.0093, 0.0293), SIMD3(0.52, 3.1378, 0.1313)),
+        .quest3: (SIMD3(-0.0336, 0.0059, 0.0025), SIMD3(0.6625, 3.0516, 0.045)),
     ]
     private var mirror: SIMD3<Float> { left ? SIMD3(1, 1, 1) : SIMD3(-1, 1, 1) }
 
@@ -182,7 +184,7 @@ final class HandModel {
     /// Cyclic coordinate descent: bend `chain` (root first) so its last segment's end reaches `target` (mesh space).
     /// Hinged joints rotate only about their axis within limits; a `free` joint swings toward the target (clamped).
     private func reach(_ chain: [Int], tip: SIMD3<Float>, _ target: SIMD3<Float>) {
-        for _ in 0..<12 {
+        for _ in 0..<20 {
             for bi in chain.reversed() {
                 let m = worldMatrices(), pivot = posed(m, bones[bi].pivot, bones[bi].parent), end = posed(m, tip, chain.last!)
                 var a = end - pivot, b = target - pivot
@@ -191,7 +193,7 @@ final class HandModel {
                     guard simd_length(a) > 1e-5, simd_length(b) > 1e-5 else { continue }
                     let d = simd_quatf(from: simd_normalize(a), to: simd_normalize(b))
                     var q = simd_slerp(simd_quatf(angle: 0, axis: SIMD3(0, 0, 1)), pr.inverse * d * pr, 0.5) * bones[bi].q
-                    if q.angle > 1.0 { q = simd_quatf(angle: 1.0, axis: q.axis) }   // CMC: limited swing
+                    if q.angle > 1.4 { q = simd_quatf(angle: 1.4, axis: q.axis) }   // CMC: limited swing
                     bones[bi].q = q
                 } else {
                     let ax = pr.act(bones[bi].axis)
