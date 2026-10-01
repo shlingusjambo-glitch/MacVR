@@ -29,8 +29,9 @@ bundled in this repository or in the release archives.
 
 ## Hand mesh
 
-mac/Resources/hands/freeHand.obj: low-poly hand mesh (Blender 3.3 export) supplied by the project owner.
-Rigged and posed at runtime by mac/Sources/Hands.swift.
+mac/Resources/hands/hand.obj: the "Splayed" mesh from "hand topology technical demonstration" (handref2.fbx),
+supplied by the project owner; converted to metres and trimmed past the wrist. Rigged and posed at runtime by
+mac/Sources/Hands.swift.
 
 ## System frameworks (build/run only)
 

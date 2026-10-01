@@ -3,7 +3,8 @@
 ## Unreleased
 
 - Menu style: pick Quest (compact dock, windows with a bottom title bar) or SteamVR (the previous wide bar) in the welcome tour or Settings > Universal Menu.
-- Translucent hands hold the controllers in MacVR Home and fade out toward the wrist. Fingers follow the trigger, grip, thumbstick, thumbrest and face buttons, and the controller's buttons, trigger, grip and stick move with your input.
+- Quest style puts the menu close: a small window at arm's length and the dock low, near your hands.
+- Translucent, life-size hands hold the controllers in MacVR Home (Quest 1, 2, 3 and Steam Frame controllers) and fade out toward the wrist. Fingers follow the trigger, grip, thumbstick, thumbrest and face buttons, and the controller's buttons, trigger, grip and stick move with your input.
 
 ## 1.1.1
 

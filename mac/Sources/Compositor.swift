@@ -82,7 +82,7 @@ final class Compositor {
     }
     /// Controller mesh plus the translucent hand holding it (rigs index by hand).
     private func attachController(_ grip: SCNNode, hand i: Int) {
-        let ctl = ControllerModels.build(controllerModel, hand: i), hm = HandModel(hand: i)
+        let ctl = ControllerModels.build(controllerModel, hand: i), hm = HandModel(hand: i, model: controllerModel, controller: ctl)
         grip.addChildNode(ctl)
         if let hm { grip.addChildNode(hm.node) }
         if rigs.count > i { rigs[i] = ControllerRig(ctl, hand: i); handModels[i] = hm } else { rigs.append(ControllerRig(ctl, hand: i)); handModels.append(hm) }
@@ -157,10 +157,24 @@ final class Compositor {
         screen.geometry = nil
         resetLayout()
     }
+    private var questLayout = true
+    func setQuestLayout(_ on: Bool) { guard on != questLayout else { return }; questLayout = on; resetLayout() }
     /// Window above, dock below, exactly as laid out on the canvas.
     private func resetLayout() {
         let m = metersPerPx
         win.simdTransform = matrix_identity_float4x4; dockNode.simdTransform = matrix_identity_float4x4; kbNode.simdTransform = matrix_identity_float4x4
+        if questLayout {   // Horizon OS: a small window just past arm's reach, the dock low and close, by the hands
+            win.simdPosition = SIMD3(0, 0.06, 0)
+            win.simdScale = SIMD3(repeating: 0.6)            // ~0.75 m wide at 0.95 m (~45°)
+            let winBottom = 0.06 - 0.6 * Float(Dashboard.SPLIT) * m / 2
+            dockNode.simdPosition = SIMD3(0, winBottom - 0.16, 0.4)   // ~0.55 m from the eyes, chest height
+            dockNode.simdEulerAngles = SIMD3(-0.5, 0, 0)
+            dockNode.simdScale = SIMD3(repeating: 0.55)
+            kbNode.simdPosition = SIMD3(0, winBottom - 0.36, 0.48)
+            kbNode.simdEulerAngles = SIMD3(-0.75, 0, 0)
+            kbNode.simdScale = SIMD3(repeating: 0.45)
+            return
+        }
         win.simdPosition = SIMD3(0, 0.12, 0)
         win.simdScale = SIMD3(repeating: 0.78)               // Quest-sized window (~60° wide)
         // dock: chest height, a little closer, tilted up toward the eyes (dock art sits at canvas y ~1124 of its 990-1262 part)
