@@ -1,0 +1,4 @@
+MIT WebXR Input Profiles assets 1.0.20
+https://github.com/immersive-web/webxr-input-profiles
+https://cdn.jsdelivr.net/npm/@webxr-input-profiles/assets@1.0.20/dist/profiles/
+Quest1 oculus-touch-v2; Quest2 oculus-touch-v3; Quest3 meta-quest-touch-plus.

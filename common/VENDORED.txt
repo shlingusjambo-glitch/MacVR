@@ -1,0 +1,2 @@
+Vendored copy. Canonical source: the WineXR repository (common/vr4mac.h).
+Sync when VR4_SHM_VERSION or the wire protocol changes — both sides must match.
