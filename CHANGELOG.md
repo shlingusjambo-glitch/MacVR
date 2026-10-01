@@ -1,5 +1,9 @@
 # Changes
 
+## 1.1.1
+
+- Hands are no longer shifted or rotated in OpenComposite games (Gorilla Tag and others). 1.1.0 advertised XR_EXT_palm_pose without real palm data, so OpenComposite read the grip pose as a palm pose. The extension is no longer advertised.
+
 ## 1.1.0
 
 - Quick Settings: Resume and Quit Game tiles while a game runs, and a one-tap Headset Mic tile.
