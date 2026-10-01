@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Microphones: Settings > Audio > Microphone picks any Mac mic or the headset's own mic. Games record from the chosen one.
+  - The headset mic reaches games through "MacVR Headset Mic", a small loopback audio driver.
+  - MacVR offers to install the driver on first launch, and it needs your password once.
+  - The Quest streams its mic as VR4_MIC packets.
 - Universal Menu redone after the late (v60-v76) Quest design:
   - Near-black translucent dock: avatar and clock (opens Quick Settings), white system glyphs, colourful app icons (Steam's square game icons), a tiny active-app indicator, and labels only on hover.
   - Hover is a calm plate with no enlarging, and clicks show a brief pressed state.

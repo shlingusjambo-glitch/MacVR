@@ -134,6 +134,9 @@ final class Engine: ObservableObject {
             }
         }
         dash.redraw = { [weak self] in self?.requestDraw() }
+        link.onMic = { Mic.shared.receive($0) }
+        Mic.shared.onChange = { [weak self] in self?.rq.async { self?.sendConfig() } }
+        Mic.shared.apply()
         dash.recenter = { [weak self] in self?.rq.async { self?.needPlace = true } }
         dash.close = { [weak self] in guard self?.dash.view != "welcome" else { return }; self?.rq.async { self?.setMenu(false) } }
         dash.uninstall = { [weak self] g in   // Steam confirms on the Mac: show the desktop so it can be clicked in VR
@@ -341,6 +344,14 @@ final class Engine: ObservableObject {
         needPlace = true
     }
 
+    private var config: [String: Any] = [:], helloMic = false
+    /// CONFIG, also re-sent (same video params) when the microphone choice changes, to start/stop headset capture.
+    private func sendConfig() {
+        guard !config.isEmpty else { return }
+        var c = config; c["mic"] = helloMic && Mic.shared.useHeadset
+        link.sendJSON(Int32(VR4_CONFIG), c)
+    }
+
     private func hello(_ j: [String: Any]) {
         let scale = Double(settings.int("render_scale")) / 100
         let rw = (j["eye_w"] as? Int).map { max(256, min(4096, $0)) } ?? 1440, rh = (j["eye_h"] as? Int).map { max(256, min(4096, $0)) } ?? 1584
@@ -357,7 +368,9 @@ final class Engine: ObservableObject {
         while eyeW * 2 * eyeH * fps > maxPixelsPerSecond && eyeW > 256 {
             eyeW = (eyeW * 15 / 16) / 32 * 32; eyeH = (eyeH * 15 / 16) / 32 * 32
         }
-        link.sendJSON(Int32(VR4_CONFIG), ["eye_w": eyeW, "eye_h": eyeH, "fps": fps, "codec": useHEVC ? "hevc" : "h264"])
+        helloMic = j["mic"] as? Bool == true
+        config = ["eye_w": eyeW, "eye_h": eyeH, "fps": fps, "codec": useHEVC ? "hevc" : "h264"]
+        sendConfig()
         encoder.configure(width: eyeW * 2, height: eyeH, fps: fps, mbps: mbps, maxQP: (link.wired ? 23 : 30) + (useHEVC ? 4 : 0), hevc: useHEVC)
         NSLog("VR4Mac: %@ connected %@, %dx%d per eye @ %d Hz, %d Mbps", j["device"] as? String ?? "Quest", link.wired ? "over USB" : "over Wi-Fi", eyeW, eyeH, fps, mbps)
         let s = shm.p
@@ -365,6 +378,7 @@ final class Engine: ObservableObject {
         needPlace = true
         let name = j["device"] as? String ?? "Quest"
         detected = HeadsetModel.detect(device: name); applyControllers()
+        Mic.shared.headsetName = detected.label
         activeHand = Dashboard.pointingHand   // the hand chosen in the welcome tour drives the menus first
         let info = "\(eyeW * 2)x\(eyeH) @ \(fps) Hz", wired = link.wired, hs = detected
         dq.async { [self] in

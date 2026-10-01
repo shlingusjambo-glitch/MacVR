@@ -844,6 +844,16 @@ final class Dashboard {
                     slider(id, CGRect(x: sx, y: y + 16, width: sw, height: 50), value, set)
                     y += 100
                 }
+                // Microphone: click cycles Mac inputs and the headset mic (games record from the chosen one)
+                let mic = CGRect(x: body.minX, y: y, width: body.width - 24, height: 84)
+                face(mic, 22, on: btn("s:mic", mic) { [unowned self] in
+                    let o = Mic.shared.options(), i = o.firstIndex { $0.0 == Mic.shared.choice } ?? 0
+                    Mic.shared.choice = o[(i + 1) % o.count].0; note("Microphone: " + Mic.shared.label); redraw()
+                }, base: 0x2c343fff)
+                icon("mic", mic.minX + 40, mic.midY, 0xffffffff, 0.9)
+                txt("Microphone", mic.minX + 76, mic.midY + 11, 30)
+                txt(Mic.shared.label + "  ›", mic.maxX - 30, mic.midY + 11, 28, 0xc9cfd8ff, align: 1, maxW: mic.width - 360)
+                y += 100
                 let mr = CGRect(x: body.minX, y: y, width: body.width - 24, height: 84)
                 face(mr, 22, on: btn("s:mono", mr) { [unowned self] in sounds.mono.toggle(); sounds.play(sounds.mono ? "on" : "off"); redraw() }, base: 0x2c343fff)
                 txt("Mono Audio", mr.minX + 30, mr.midY + 11, 30)

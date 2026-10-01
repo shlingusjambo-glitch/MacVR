@@ -112,6 +112,7 @@ struct StatusView: View {
     @Environment(\.openWindow) private var openWindow
     var body: some View {
         StatusBody(e: e, games: e.games, openSettings: { openWindow(id: "settings") }, openVRView: { openWindow(id: "vrview") })
+            .onAppear { DispatchQueue.main.asyncAfter(deadline: .now() + 1) { Mic.offerInstall() } }   // first launch: headset mic driver
     }
 }
 
@@ -346,12 +347,21 @@ final class AudioPrefs: ObservableObject {
     var balance: Double { get { Double(s.balance) } set { objectWillChange.send(); s.balance = abs(Int(newValue)) < 4 ? 0 : Int(newValue) } }
     var mono: Bool { get { s.mono } set { objectWillChange.send(); s.mono = newValue } }
     var brightness: Double { get { Double(s.brightness) } set { objectWillChange.send(); s.brightness = Int(newValue) } }
+    var mic: String { get { Mic.shared.choice } set { objectWillChange.send(); Mic.shared.choice = newValue } }
 }
 struct AudioCard: View {
     @ObservedObject var prefs: AudioPrefs
     var body: some View {
         Card {
             slider("Headset Audio", "speaker.wave.2.fill", Binding(get: { prefs.stream }, set: { prefs.stream = $0 }), 0...100, "%")
+            Divider().overlay(OS.stroke).padding(.vertical, 8)
+            HStack(spacing: 10) {
+                Image(systemName: "mic.fill").foregroundColor(OS.dim).frame(width: 18)
+                Text("Microphone").foregroundColor(.white).frame(width: 120, alignment: .leading)
+                Picker("", selection: Binding(get: { prefs.mic }, set: { prefs.mic = $0 })) {
+                    ForEach(Mic.shared.options(), id: \.0) { Text($0.1).tag($0.0) }
+                }.labelsHidden()
+            }.font(.system(size: 13))
             Divider().overlay(OS.stroke).padding(.vertical, 8)
             slider("Menu Sounds", "music.note", Binding(get: { prefs.ui }, set: { prefs.ui = $0 }), 0...100, "%")
             Divider().overlay(OS.stroke).padding(.vertical, 8)

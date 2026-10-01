@@ -6,6 +6,7 @@ final class Link {
     var onHello: ([String: Any]) -> Void = { _ in }
     var onTracking: (VR4Tracking) -> Void = { _ in }
     var onRequestIDR: () -> Void = {}
+    var onMic: (Data) -> Void = { _ in }
     var onDisconnect: () -> Void = {}
     var onIssue: (String) -> Void = { _ in }
     private(set) var connected = false
@@ -109,6 +110,7 @@ final class Link {
         case VR4_TRACKING where b.count == MemoryLayout<VR4Tracking>.size:
             onTracking(b.withUnsafeBytes { $0.loadUnaligned(as: VR4Tracking.self) })
         case VR4_REQUEST_IDR: onRequestIDR()
+        case VR4_MIC: onMic(b)
         default: break
         }
     }
