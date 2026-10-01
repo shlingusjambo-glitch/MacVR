@@ -250,7 +250,7 @@ struct SettingsView: View {
     static let keys: [String: [String]] = [
         "general": ["render_scale", "refresh_rate"], "video": ["bitrate", "codec", "show_fps"],
         "controllers": ["controller_model", "system_button"], "environment": ["floor_grid"],
-        "menu": ["dashboard_position", "ui_curved", "show_desktop_tabs", "show_settings_tab", "show_power"],
+        "menu": ["menu_style", "dashboard_position", "ui_curved", "show_desktop_tabs", "show_settings_tab", "show_power"],
     ]
 
     var body: some View {

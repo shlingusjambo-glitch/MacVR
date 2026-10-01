@@ -21,6 +21,7 @@ final class Settings: ObservableObject {
                             options: ["Void", "Golden Bay", "Venice Sunset", "Rooftop Night", "Kloofendal Sky", "Lilienstein", "Starry Night",
                                       "Forest", "Snowy Park", "Fireside", "Sky On Fire", "Harbour Sunset", "Moonless Night"], def: "Golden Bay")]),
         ("Dashboard", [
+            Item(key: "menu_style", label: "Menu Style", options: ["Quest", "SteamVR"], def: "Quest"),
             Item(key: "dashboard_position", label: "Dashboard Position", options: ["NEAR", "MIDDLE", "FAR"], def: "NEAR"),
             Item(key: "show_power", label: "Show Power Options", options: offOn, def: "On"),
             Item(key: "ui_curved", label: "Curved UI", options: offOn, def: "On"),

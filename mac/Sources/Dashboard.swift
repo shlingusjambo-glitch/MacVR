@@ -53,7 +53,7 @@ final class Dashboard {
     var tourPart: String? {
         guard view == "welcome" else { return nil }
         let t = Dashboard.tour[min(step, Dashboard.tour.count - 1)]
-        return t.kind == "home" || t.kind == "hand" ? nil : t.part
+        return ["home", "hand", "style"].contains(t.kind) ? nil : t.part
     }
     /// Close dot beside a grab bar (grows into an X on hover).
     static func dotRect(_ g: CGRect) -> CGRect { CGRect(x: g.midX + 120, y: g.midY - 30, width: 60, height: 60) }   // just past the pill's end
@@ -102,7 +102,13 @@ final class Dashboard {
     var grabbing: String?                 // grab bar held (Engine sets/clears), keeps it highlighted
     private var pressed: (String, CFTimeInterval)?, inPress = false, navved = false
     private let solidLock = NSLock()
-    private var solidState = (true, false)   // (windowOpen, keyboardOpen) as of the last draw
+    private var solidState = (true, false, Dashboard.DOCK)   // (windowOpen, keyboardOpen, dock) as of the last draw
+    /// Menu style (Settings > Universal Menu): "Quest" = compact OS dock + windows with a bottom title bar;
+    /// otherwise the SteamVR-like wide bar with the title on top. Read once per draw.
+    private var quest = true
+    private var dockRect = Dashboard.DOCK
+    /// Window area below the title (Quest: the title bar is at the bottom, so content starts higher).
+    private var content: CGRect { quest ? CGRect(x: 164, y: 64, width: 1720, height: 764) : Dashboard.content }
     /// The control was just clicked: shows a brief depressed state (a fraction of a second).
     private func isPressed(_ id: String) -> Bool { pressed.map { $0.0 == id && CACurrentMediaTime() - $0.1 < 0.12 } ?? false }
 
@@ -140,9 +146,9 @@ final class Dashboard {
     /// Called on the render queue (laser hit tests) while the menu draws on its own: reads a snapshot taken after each draw.
     func solid(_ uv: CGPoint) -> Bool {
         let p = px(uv)
-        solidLock.lock(); let (windowOpen, keyboardOpen) = solidState; solidLock.unlock()
+        solidLock.lock(); let (windowOpen, keyboardOpen, dock) = solidState; solidLock.unlock()
         return windowOpen && (Dashboard.WIN.contains(p) || Dashboard.GRAB.contains(p) || Dashboard.dotRect(Dashboard.GRAB).contains(p))
-            || Dashboard.DOCK.contains(p) || Dashboard.DOCKGRAB.contains(p) || Dashboard.dotRect(Dashboard.DOCKGRAB).contains(p)
+            || dock.contains(p) || Dashboard.DOCKGRAB.contains(p) || Dashboard.dotRect(Dashboard.DOCKGRAB).contains(p)
             || (keyboardOpen && (Dashboard.KB.contains(p) || Dashboard.KBGRAB.contains(p) || Dashboard.dotRect(Dashboard.KBGRAB).contains(p)))
     }
 
@@ -229,8 +235,17 @@ final class Dashboard {
     }
     /// Flat tile fill for app icons and system tiles (the brighter palette colour, no gradient).
     private func grad(_ r: CGRect, _ rad: CGFloat, _ top: UInt32, _ bottom: UInt32) { rr(r, rad, top) }
+    /// Quest style: the same layouts in neutral greys with Meta's blue (SteamVR style keeps its blue-grey slate).
+    private static let questPalette: [UInt32: UInt32] = [
+        0x1f252dff: 0x232426ff, 0x353d49ff: 0x38393cff, 0x4f5a69ff: 0x4a4b4fff, 0x2a313aff: 0x2b2c2eff, 0x2c343fff: 0x2e2f32ff,
+        0x303945ff: 0x313235ff, 0x3c4654ff: 0x3d3e42ff, 0x3a4452ff: 0x3a3b3eff, 0x56606eff: 0x505155ff, 0x46505eff: 0x46474bff,
+        0x4a5462ff: 0x48494dff, 0x5a6472ff: 0x5a5b5fff, 0x222932ff: 0x1c1d1fff, 0x323b47ff: 0x333437ff, 0x3c4755ff: 0x3e3f43ff,
+        0x1b2129ff: 0x1e1f21ff, 0x2f3742ff: 0x2f3033ff, 0x0d1117ff: 0x161719ff, 0x15181df2: 0x1c1d1ff2,
+        0x2d8cffff: 0x2f6df6ff, 0x4a9dffff: 0x4a83f8ff, 0x9aa3afff: 0xa3a5aaff, 0xc9cfd8ff: 0xcfd0d3ff, 0xd8dde4ff: 0xdcdde0ff,
+    ]
     private func col(_ c: UInt32) -> CGColor {   // 0xRRGGBBAA
-        CGColor(srgbRed: CGFloat(c >> 24 & 255) / 255, green: CGFloat(c >> 16 & 255) / 255, blue: CGFloat(c >> 8 & 255) / 255, alpha: CGFloat(c & 255) / 255)
+        let c = quest ? Dashboard.questPalette[c] ?? c : c
+        return CGColor(srgbRed: CGFloat(c >> 24 & 255) / 255, green: CGFloat(c >> 16 & 255) / 255, blue: CGFloat(c >> 8 & 255) / 255, alpha: CGFloat(c & 255) / 255)
     }
     /// Button background; hover is a lighter flat fill.
     private func face(_ r: CGRect, _ rad: CGFloat, on: Bool, base: UInt32 = 0x353d49ff, hot: UInt32 = 0x4f5a69ff) {
@@ -414,18 +429,37 @@ final class Dashboard {
     }
     private func chrome() {
         let w = Dashboard.WIN
+        if quest { questChrome(); return }
         rr(w, 40, 0x1f252dff)   // flat panel
         txt(title, w.midX, w.minY + 60, 30, 0xd8dde4ff, bold: true, align: 0.5)
-        if view == "keyboard" || (view == "settings") {
-            // (settings has its own sidebar; keyboard search returns to the library)
-        }
         if view == "desktop" {   // keyboard for typing into the Mac (the panel also carries Esc/Tab/arrows)
             let k = CGRect(x: w.minX + 24, y: w.minY + 18, width: 64, height: 64)
-            face(k, 32, on: btn("dt:kb", k) { [unowned self] in desktopKeyboard.toggle(); sounds.play(desktopKeyboard ? "open" : "back"); redraw() },
-                 base: desktopKeyboard ? 0x2d8cffff : 0x00000000)
-            icon("keyboard", k.midX, k.midY, 0xffffffff, 1.0)
+            desktopKeyboardButton(k)
             txt("stick ↔ zoom · trigger click · grip right-click", w.maxX - 110, w.minY + 60, 26, 0x9aa3afff, align: 1)
         }
+        grabBar("grab", Dashboard.GRAB)
+    }
+    private func desktopKeyboardButton(_ k: CGRect) {
+        face(k, k.height / 2, on: btn("dt:kb", k) { [unowned self] in desktopKeyboard.toggle(); sounds.play(desktopKeyboard ? "open" : "back"); redraw() },
+             base: desktopKeyboard ? 0x2d8cffff : 0x00000000)
+        icon("keyboard", k.midX, k.midY, 0xffffffff, 1.0)
+    }
+    /// Quest window: grey panel, app content on top, and a darker title bar along the bottom edge with close and
+    /// minimise on the left and the app name centred (like Horizon OS windows).
+    private func questChrome() {
+        let w = Dashboard.WIN, bar = CGRect(x: w.minX, y: w.maxY - 72, width: w.width, height: 72)
+        rr(w, 30, 0x232426ff)
+        ctx.saveGState(); ctx.addPath(path(w, 30)); ctx.clip()
+        ctx.setFillColor(col(0x161719ff)); ctx.fill(bar)
+        ctx.restoreGState()
+        let x = CGRect(x: bar.minX + 14, y: bar.minY + 8, width: 56, height: 56), m = CGRect(x: x.maxX + 8, y: x.minY, width: 56, height: 56)
+        if btn("win:close", x, { [unowned self] in windowOpen = false; sounds.play("close"); redraw() }) || isPressed("win:close") { rr(x, 16, 0xffffff1c) }
+        icon("x", x.midX, x.midY, 0xffffffff, 0.8)
+        if btn("win:min", m, { [unowned self] in windowOpen = false; sounds.play("back"); redraw() }) || isPressed("win:min") { rr(m, 16, 0xffffff1c) }
+        rr(CGRect(x: m.midX - 13, y: m.midY - 2, width: 26, height: 4), 2, 0xffffffff)
+        txt(title, bar.midX, bar.midY + 10, 27, 0xcfd0d3ff, align: 0.5)
+        if !games.status.isEmpty { txt(games.status, m.maxX + 24, bar.midY + 10, 26, 0xa3a5aaff, maxW: bar.width / 2 - 260) }
+        if view == "desktop" { desktopKeyboardButton(CGRect(x: bar.maxX - 70, y: bar.minY + 8, width: 56, height: 56)) }
         grabBar("grab", Dashboard.GRAB)
     }
     /// Quest-style pill; brighter and wider while hovered or held. A small dot beside it grows into an X and closes
@@ -434,7 +468,7 @@ final class Dashboard {
         let hot = hover == id || grabbing == id
         regions.append(Region(id: id, r: g, fn: nil, drag: nil))
         rr(CGRect(x: g.midX - (hot ? 120 : 95), y: g.midY - 8, width: hot ? 240 : 190, height: 16), 8, hot ? 0xffffffff : 0xffffffb0)
-        if id == "grab" && view == "welcome" { return }
+        if id == "grab" && view == "welcome" || quest && id != "grabkb" { return }   // Quest: the window's X is in its title bar
         let d = Dashboard.dotRect(g)
         let dotHot = btn("x:" + id, d) { [unowned self] in
             if id == "grabkb" {   // close the keyboard
@@ -496,6 +530,7 @@ final class Dashboard {
     /// Hover is a calm plate (no enlarging), the active app gets a tiny indicator, labels only appear on hover.
     private func dock() {
         let d = Dashboard.DOCK
+        dockRect = d
         rr(d, 40, 0x15181de8)
         var tip: (CGRect, String)?
         func plate(_ id: String, _ r: CGRect, _ rad: CGFloat) {   // hover / press feedback behind a control
@@ -564,6 +599,74 @@ final class Dashboard {
         }
         grabBar("grabdock", Dashboard.DOCKGRAB)
     }
+    /// Quest Universal Menu (Horizon OS): a compact grey bar sized to its contents and centred under the window.
+    /// Left: clock, avatar and a row of status glyphs (opens Quick Settings; the bell opens notifications). Then
+    /// colourful rounded app tiles, recent games, a divider and the App Library grid. The active app gets a small bar
+    /// under its tile; hover shows the name above.
+    private func questDock() {
+        var items: [String] = gameActive ? ["playing"] : []
+        items += settings.bool("show_desktop_tabs") ? ["desktop", "steam"] : ["steam"]
+        if settings.bool("show_settings_tab") { items.append("settings") }
+        let recent = recents.compactMap { id in self.games.library.first { $0.appid == id } }
+        let tile: CGFloat = 80, gap: CGFloat = 22, statusW: CGFloat = 250
+        let tiles = CGFloat(items.count + recent.count)
+        let width = 24 + statusW + 28 + tiles * (tile + gap) + 26 + tile + 24
+        let d = CGRect(x: Dashboard.DOCK.midX - width / 2, y: Dashboard.DOCK.minY, width: width, height: Dashboard.DOCK.height)
+        dockRect = d
+        rr(d, 34, 0x2a2b2dff)
+        var tip: (CGRect, String)?
+        // status: time + AM/PM, avatar with presence dot; link, notifications and fps glyphs underneath
+        let st = CGRect(x: d.minX + 14, y: d.minY + 10, width: statusW, height: d.height - 20)
+        if btn("dock:quick", st, { [unowned self] in nav("quick") }) { tip = (st, "Quick Settings") }
+        if isPressed("dock:quick") { rr(st, 22, 0xffffff26) } else if hover == "dock:quick" { rr(st, 22, 0xffffff12) }
+        let tf = DateFormatter(); tf.dateFormat = "h:mm"
+        let af = DateFormatter(); af.dateFormat = "a"
+        let time = tf.string(from: Date())
+        txt(time, st.minX + 16, st.minY + 46, 34, bold: true)
+        txt(af.string(from: Date()), st.minX + 22 + CGFloat(time.count) * 19, st.minY + 46, 26, 0xcfd0d3ff)
+        let av = CGRect(x: st.maxX - 66, y: st.minY + 8, width: 52, height: 52)
+        rr(av, 26, 0xd9467aff)
+        if let first = Dashboard.userName.first { txt(String(first).uppercased(), av.midX, av.midY + 10, 27, bold: true, align: 0.5) }
+        else { icon("person", av.midX, av.midY, 0xffffffff, 0.7) }
+        rr(CGRect(x: av.maxX - 16, y: av.maxY - 16, width: 18, height: 18), 9, 0x2a2b2dff)
+        rr(CGRect(x: av.maxX - 13, y: av.maxY - 13, width: 12, height: 12), 6, 0x45d36bff)   // headset connected
+        icon(linkStatus == "USB" ? "usb" : "wifi", st.minX + 32, st.maxY - 24, 0xdcdde0ff, 0.62)
+        let bell = CGRect(x: st.minX + 62, y: st.maxY - 46, width: 46, height: 44)
+        if btn("dock:notifications", bell, { [unowned self] in nav("notifications") }) { tip = (bell, "Notifications"); rr(bell, 12, 0xffffff1c) }
+        icon("bell", bell.midX, bell.midY, 0xdcdde0ff, 0.62)
+        if unread > 0 { rr(CGRect(x: bell.maxX - 14, y: bell.minY + 6, width: 11, height: 11), 5.5, 0x2f6df6ff) }
+        if settings.bool("show_fps") { txt("\(fps) fps", st.minX + 120, st.maxY - 14, 26, 0x5ee07aff) }
+        // app tiles
+        var x = st.maxX + 28
+        func slot(_ id: String, _ label: String, _ draw: (CGRect) -> Void, _ fn: @escaping () -> Void, active: Bool) {
+            let r = CGRect(x: x, y: d.midY - tile / 2 - 4, width: tile, height: tile)
+            let h = btn("dock:" + id, r, fn)
+            draw(r)
+            if isPressed("dock:" + id) { rr(r, 22, 0x00000050) } else if h { outline(r.insetBy(dx: -5, dy: -5), 26, 0xffffffc0, 3) }
+            if active { rr(CGRect(x: r.midX - 14, y: d.maxY - 13, width: 28, height: 5), 2.5, 0xbfc0c4ff) }
+            if h { tip = (r, label) }
+            x += tile + gap
+        }
+        for id in items {
+            slot(id, Dashboard.apps[id]!.label, { [unowned self] r in
+                if id == "playing", let gm = playingGame { gameIcon(gm, r) } else { appIcon(id, r, hot: false) }
+            }, { [unowned self] in
+                if id == "steam" { openSteam(); nav("desktop"); note("Opening Steam on the Mac desktop") } else { nav(id) }
+            }, active: view == id)
+        }
+        for g in recent {
+            slot("game:" + g.appid, g.name, { [unowned self] r in gameIcon(g, r) }, { [unowned self] in start(g) },
+                 active: gameActive && self.games.playing(gameName) == g)
+        }
+        rr(CGRect(x: x + 1, y: d.minY + 30, width: 2, height: d.height - 60), 1, 0xffffff30); x += 26
+        slot("library", "App Library", { [unowned self] r in rr(r, 22, 0x3c3d41ff); icon("apps", r.midX, r.midY, 0xffffffff, 1.0) },
+             { [unowned self] in nav("library") }, active: view == "library" || view == "keyboard")
+        if let (r, label) = tip {
+            let w = CGFloat(label.count) * 15 + 44, tt = CGRect(x: min(max(r.midX - w / 2, 20), CGFloat(Dashboard.W) - w - 20), y: d.minY - 58, width: w, height: 46)
+            rr(tt, 12, 0x1c1d1ff2); txt(label, tt.midX, tt.midY + 9, 26, align: 0.5)
+        }
+        grabBar("grabdock", Dashboard.DOCKGRAB)
+    }
     /// A game's small square Steam icon (the Quest dock uses icon assets, not marketing art); cropped art until it loads.
     private func gameIcon(_ g: Game, _ r: CGRect) {
         if let ic = games.icon(g.appid) { cover(ic, r, "", rad: r.width * 0.22) }
@@ -572,7 +675,7 @@ final class Dashboard {
 
     // MARK: App Library
     private func drawLibrary() {
-        let c = Dashboard.content
+        let c = content
         let s = CGRect(x: c.midX - 380, y: c.minY - 4, width: 760, height: 64)
         let searching = view == "keyboard"
         face(s, 32, on: btn("search", s) { [unowned self] in view = "keyboard"; sounds.play("open"); redraw() },
@@ -691,7 +794,7 @@ final class Dashboard {
 
     // MARK: Now Playing
     private func drawPlaying() {
-        let c = Dashboard.content
+        let c = content
         let g = games.playing(gameName)
         if let art = g.flatMap({ games.image($0.appid, "library_hero") }) {
             ctx.saveGState(); ctx.setAlpha(0.4)
@@ -724,7 +827,7 @@ final class Dashboard {
     // MARK: Mac desktop
     /// Desktop picture area (canvas px) - the Compositor lays the live Mac screen exactly over it.
     var desktopRect: CGRect {
-        let c = Dashboard.content
+        let c = content
         let area = CGRect(x: Dashboard.WIN.minX + 24, y: c.minY - 10, width: Dashboard.WIN.width - 48, height: c.height + 10)   // whole window
         var w = area.width, h = w / desktopAspect
         if h > area.height { h = area.height; w = h * desktopAspect }
@@ -755,7 +858,7 @@ final class Dashboard {
 
     // MARK: Quick Settings (deliberately small: shortcuts, two sliders, status)
     private func drawQuick() {
-        let c = Dashboard.content
+        let c = content
         let envs = Settings.items["environment"]!.options
         var shortcuts: [(String, String, String, Bool, () -> Void)] = gameActive ? [
             ("q:resume", "play", "Resume", false, { [unowned self] in close() }),   // straight back into the game
@@ -806,16 +909,16 @@ final class Dashboard {
     private static let sectionKeys: [String: [String]] = [
         "general": ["render_scale", "refresh_rate"], "video": ["bitrate", "codec", "show_fps"],
         "controllers": ["controller_model", "system_button"], "environment": ["floor_grid"],
-        "menu": ["dashboard_position", "ui_curved", "show_desktop_tabs", "show_settings_tab", "show_power"], "developer": ["show_fps"],
+        "menu": ["menu_style", "dashboard_position", "ui_curved", "show_desktop_tabs", "show_settings_tab", "show_power"], "developer": ["show_fps"],
     ]
     private func drawSettings() {
         let w = Dashboard.WIN
-        let side = CGRect(x: w.minX + 24, y: w.minY + 96, width: 440, height: w.height - 120)
+        let side = CGRect(x: w.minX + 24, y: content.minY, width: 440, height: content.height - 4)
         for (i, s) in Dashboard.sections.enumerated() {
             let r = CGRect(x: side.minX, y: side.minY + CGFloat(i) * 86, width: side.width, height: 76)
             let sel = section == s.id
             let h = btn("sec:" + s.id, r) { [unowned self] in if section != s.id { section = s.id; setScroll = 0; sounds.play("tap") }; redraw() }
-            if sel || h { rr(r, 20, sel ? 0x3c4755ff : 0x323b47ff) }
+            if sel || h { rr(r, 20, sel ? (quest ? 0x2d8cffff : 0x3c4755ff) : 0x323b47ff) }
             icon(s.icon, r.minX + 44, r.midY, sel ? 0xffffffff : 0xc9cfd8ff, 1.05)
             txt(s.label, r.minX + 88, r.midY + 10, 29, sel ? 0xffffffff : 0xc9cfd8ff, bold: sel)
         }
@@ -920,7 +1023,7 @@ final class Dashboard {
     // MARK: per-game settings (resolution / world scale / theater)
     private func drawAppSettings() {
         guard let g = settingsFor else { view = "library"; return }
-        let c = Dashboard.content
+        let c = content
         cover(games.image(g.appid, "header"), CGRect(x: c.minX, y: c.minY, width: 420, height: 196), g.name, rad: 18)
         txt(g.name, c.minX + 460, c.minY + 70, 44, bold: true, maxW: c.width - 480)
         txt(g.vr ? "VR game" : "Flatscreen game: try Theater", c.minX + 460, c.minY + 120, 28, 0x9aa3afff)
@@ -945,7 +1048,7 @@ final class Dashboard {
 
     // MARK: notifications
     private func drawNotifications() {
-        let c = Dashboard.content
+        let c = content
         if notices.isEmpty { txt("You're all caught up.", c.midX, c.midY, 32, 0x9aa3afff, align: 0.5); return }
         let tf = DateFormatter(); tf.timeStyle = .short
         for (i, (d, s)) in notices.prefix(8).enumerated() {
@@ -963,6 +1066,7 @@ final class Dashboard {
         ("name", "What's your name?", "Type it with the keyboard below. Pull the trigger to press keys.", "trigger"),
         ("hand", "Which hand do you point with?", "That controller drives the menus first. Either one works anytime.", "none"),
         ("home", "Pick your home", "This is where you'll land between games. Change it anytime in Settings.", "none"),
+        ("style", "Pick your menu", "Quest: a compact dock with app tiles under each window. SteamVR: a wide bar with the title on top. Change it anytime in Settings.", "none"),
         ("info", "Point and select", "Aim at anything and pull the trigger to select it.", "trigger"),
         ("info", "Move windows", "Point at the bar under a window, hold the trigger and move. Push your hand forward to send it further away.", "trigger"),
         ("info", "Scroll", "Push the thumbstick up or down to scroll the library, settings and the Mac desktop.", "stick"),
@@ -973,7 +1077,7 @@ final class Dashboard {
     var liveTourController = false   // Engine: the 3D tour controller is being shown
     private static let homes = ["Golden Bay", "Venice Sunset", "Forest", "Fireside"]
     private func drawWelcome() {
-        let c = Dashboard.content, t = Dashboard.tour[min(step, Dashboard.tour.count - 1)]
+        let c = content, t = Dashboard.tour[min(step, Dashboard.tour.count - 1)]
         // left: the real controller with the input for this step tinted blue (or the answer UI for questions)
         let box = CGRect(x: c.minX + 30, y: c.minY + 20, width: 560, height: 560)
         if t.kind != "home" {
@@ -1010,6 +1114,14 @@ final class Dashboard {
                      base: sel ? 0x2d8cffff : 0x353d49ff, hot: sel ? 0x4a9dffff : 0x46505eff)
                 icon("hand", r.midX, r.midY - 20, 0xffffffff, 1.6)
                 txt(label + " hand", r.midX, r.midY + 52, 32, bold: true, align: 0.5)
+            }
+        case "style":
+            for (i, label) in ["Quest", "SteamVR"].enumerated() {
+                let r = CGRect(x: tx + CGFloat(i) * (tw / 2 + 10), y: y, width: tw / 2 - 10, height: 150), sel = settings["menu_style"] == label
+                face(r, 30, on: btn("tour:style\(i)", r) { [unowned self] in settings.set("menu_style", label); sounds.play("on"); redraw() },
+                     base: sel ? 0x2d8cffff : 0x353d49ff, hot: sel ? 0x4a9dffff : 0x46505eff)
+                icon(i == 0 ? "apps" : "grid", r.midX, r.midY - 20, 0xffffffff, 1.6)
+                txt(label, r.midX, r.midY + 52, 32, bold: true, align: 0.5)
             }
         case "home":   // big thumbnails on the left area too
             let gw = (c.width - 40 - 3 * 28) / 4, gh = gw * 0.56
@@ -1109,8 +1221,9 @@ final class Dashboard {
     }
 
     func draw() {
-        defer { solidLock.lock(); solidState = (windowOpen, keyboardOpen); solidLock.unlock() }
+        defer { solidLock.lock(); solidState = (windowOpen, keyboardOpen, dockRect); solidLock.unlock() }
         regions = []
+        quest = settings["menu_style"] != "SteamVR"
         ctx.clear(CGRect(x: 0, y: 0, width: Dashboard.W, height: Dashboard.H))
         if view == "settings" && !settings.bool("show_settings_tab") || view == "desktop" && !settings.bool("show_desktop_tabs")
             || view == "playing" && !gameActive { view = "library" }
@@ -1127,8 +1240,8 @@ final class Dashboard {
             default: drawLibrary()
             }
         }
-        if windowOpen && !games.status.isEmpty { txt(games.status, Dashboard.WIN.minX + 40, Dashboard.WIN.minY + 60, 26, 0x9aa3afff, maxW: 700) }
-        if view != "welcome" { dock() }   // no Universal Menu during the first-run tour
+        if windowOpen && !quest && !games.status.isEmpty { txt(games.status, Dashboard.WIN.minX + 40, Dashboard.WIN.minY + 60, 26, 0x9aa3afff, maxW: 700) }
+        if view != "welcome" { if quest { questDock() } else { dock() } }   // no Universal Menu during the first-run tour
         if keyboardOpen {
             keyboardPanel(target: view == "desktop" ? "desktop" : view == "welcome" ? "name" : "search")
             grabBar("grabkb", Dashboard.KBGRAB)

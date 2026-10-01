@@ -10,6 +10,7 @@ rm -rf $APP/Contents/Resources/controllers; cp -R Resources/controllers $APP/Con
 rm -rf $APP/Contents/Resources/environments; cp -R Resources/environments $APP/Contents/Resources/   # home panoramas (CC0)
 rm -rf $APP/Contents/Resources/sounds; cp -R Resources/sounds $APP/Contents/Resources/   # UI sounds (AOSP, Apache-2.0) + welcome-tour music
 rm -rf $APP/Contents/Resources/icons; cp -R Resources/icons $APP/Contents/Resources/   # UI icons (Lucide, ISC)
+rm -rf $APP/Contents/Resources/hands; cp -R Resources/hands $APP/Contents/Resources/   # hand mesh (freeHand.obj), rigged in Hands.swift
 if [ -f ../runtime/build/vr4mac_openxr.dll ]; then cp ../runtime/build/vr4mac_openxr.dll $APP/Contents/Resources/; fi
 for f in ../SiliconXR/build/libsiliconxr_openxr.dylib ../SiliconXR-Mod/build/siliconxr.jar; do if [ -f $f ]; then cp $f $APP/Contents/Resources/; fi; done   # SiliconXR: VR for native Mac games
 # MacVR Headset Mic: loopback HAL driver; MacVR installs it into /Library/Audio/Plug-Ins/HAL on first launch (asks first)

@@ -1,5 +1,10 @@
 # Changes
 
+## Unreleased
+
+- Menu style: pick Quest (compact dock, windows with a bottom title bar) or SteamVR (the previous wide bar) in the welcome tour or Settings > Universal Menu.
+- Translucent hands hold the controllers in MacVR Home and fade out toward the wrist. Fingers follow the trigger, grip, thumbstick, thumbrest and face buttons, and the controller's buttons, trigger, grip and stick move with your input.
+
 ## 1.1.1
 
 - Hands are no longer shifted or rotated in OpenComposite games (Gorilla Tag and others). 1.1.0 advertised XR_EXT_palm_pose without real palm data, so OpenComposite read the grip pose as a palm pose. The extension is no longer advertised.

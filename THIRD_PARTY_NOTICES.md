@@ -27,6 +27,11 @@ bundled in this repository or in the release archives.
 | Steam client installer | [cdn.cloudflare.steamstatic.com/client/installer/SteamSetup.exe](https://cdn.cloudflare.steamstatic.com/client/installer/SteamSetup.exe) | Valve Steam Subscriber Agreement |
 | Gradle + Android SDK components (APK build only) | Google / Gradle | Their respective licenses |
 
+## Hand mesh
+
+mac/Resources/hands/freeHand.obj: low-poly hand mesh (Blender 3.3 export) supplied by the project owner.
+Rigged and posed at runtime by mac/Sources/Hands.swift.
+
 ## System frameworks (build/run only)
 
 Xcode command-line tools (Swift, VideoToolbox, ScreenCaptureKit, SceneKit),

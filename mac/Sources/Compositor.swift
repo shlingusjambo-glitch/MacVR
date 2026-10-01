@@ -23,6 +23,7 @@ final class Compositor {
     private static let split = Float(Dashboard.SPLIT) / Float(Dashboard.H)   // canvas v where the dock part starts
     private static let split2 = Float(Dashboard.SPLIT2) / Float(Dashboard.H) // canvas v where the keyboard part starts
     private var hands: [(grip: SCNNode, aim: SCNNode, laser: SCNNode, dot: SCNNode)] = []
+    private var rigs: [ControllerRig] = [], handModels: [HandModel?] = []
     /// Connected headset generation (default Quest 2). Engine should call
     /// setControllerModel(HeadsetModel.detect(device:)) on HELLO.
     private var controllerModel: HeadsetModel = .quest2
@@ -33,7 +34,7 @@ final class Compositor {
         controllerModel = m
         for (i, h) in hands.enumerated() {
             h.grip.childNodes.forEach { $0.removeFromParentNode() }
-            h.grip.addChildNode(ControllerModels.build(m, hand: i))
+            attachController(h.grip, hand: i)
         }
     }
     private(set) var radius: Float = 0
@@ -68,7 +69,7 @@ final class Compositor {
 
         for i in 0..<2 {
             let grip = SCNNode(), aim = SCNNode()
-            grip.addChildNode(ControllerModels.build(controllerModel, hand: i))
+            attachController(grip, hand: i)
             let laser = SCNNode(geometry: SCNCylinder(radius: 0.0015, height: 1))
             laser.pivot = SCNMatrix4MakeTranslation(0, -0.5, 0); laser.eulerAngles.x = -.pi / 2
             laser.geometry?.firstMaterial?.diffuse.contents = NSColor(red: 0.4, green: 0.75, blue: 0.96, alpha: 1)
@@ -78,6 +79,13 @@ final class Compositor {
             [grip, aim, dot].forEach(scene.rootNode.addChildNode)
             hands.append((grip, aim, laser, dot))
         }
+    }
+    /// Controller mesh plus the translucent hand holding it (rigs index by hand).
+    private func attachController(_ grip: SCNNode, hand i: Int) {
+        let ctl = ControllerModels.build(controllerModel, hand: i), hm = HandModel(hand: i)
+        grip.addChildNode(ctl)
+        if let hm { grip.addChildNode(hm.node) }
+        if rigs.count > i { rigs[i] = ControllerRig(ctl, hand: i); handModels[i] = hm } else { rigs.append(ControllerRig(ctl, hand: i)); handModels.append(hm) }
     }
 
     // MARK: scene content
@@ -562,6 +570,7 @@ final class Compositor {
             let n = hands[i]
             n.grip.isHidden = !valid; n.aim.isHidden = !valid || (dash.isHidden && !lasersAlways)
             n.grip.simdPosition = SIMD3(h.grip.px, h.grip.py, h.grip.pz); n.grip.simdOrientation = simd_quatf(ix: h.grip.qx, iy: h.grip.qy, iz: h.grip.qz, r: h.grip.qw)
+            if valid { rigs[i].update(h); handModels[i]?.update(h, targets: rigs[i].targets()) }
             n.aim.simdPosition = SIMD3(h.aim.px, h.aim.py, h.aim.pz); n.aim.simdOrientation = simd_quatf(ix: h.aim.qx, iy: h.aim.qy, iz: h.aim.qz, r: h.aim.qw)
             let len = rays[i] ?? 3
             n.laser.scale = SCNVector3(1, CGFloat(len), 1)
