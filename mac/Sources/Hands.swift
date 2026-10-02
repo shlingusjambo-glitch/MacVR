@@ -38,9 +38,9 @@ final class HandModel {
     static var place: [HeadsetModel: Placement] = [   // fitted offline: palm on the handle, fingertips on its surface,
         // index on the trigger, thumb able to reach the thumbrest, stick and both face buttons, least overlap,
         // a straight index along the aim ray
-        .quest1: (SIMD3(-0.0384, 0.0124, 0.0417), SIMD3(0.505, 3.0366, 0.15)),
-        .quest2: (SIMD3(-0.0386, 0.0099, 0.0301), SIMD3(0.49, 3.1716, 0.0375)),
-        .quest3: (SIMD3(-0.037, 0.0101, 0.0248), SIMD3(0.475, 3.2541, 0.1163)),
+        .quest1: (SIMD3(-0.0387, 0.012, 0.0421), SIMD3(0.52, 3.0366, 0.15)),
+        .quest2: (SIMD3(-0.0388, 0.0097, 0.026), SIMD3(0.4975, 3.0741, -0.0225)),
+        .quest3: (SIMD3(-0.0349, 0.0095, 0.0252), SIMD3(0.6588, 3.1116, 0.12)),
     ]
     private var mirror: SIMD3<Float> { left ? SIMD3(1, 1, 1) : SIMD3(-1, 1, 1) }
 
@@ -195,9 +195,9 @@ final class HandModel {
                     var cost: Float = 0
                     for k in 0..<3 {
                         let s = posed(m, j[k], k == 0 ? 0 : bi + k - 1), e = posed(m, j[k + 1], bi + k)
-                        for t in stride(from: Float(0.25), through: 1, by: 0.25) { cost += max(0, 0.008 - outside(s + (e - s) * t)) }
-                        if k > 0 { cost += 0.15 * abs(outside((s + e) / 2) - 0.008) }   // middle and tip segments rest on it
-                        if k == 2 { cost += 0.15 * abs(outside(e) - 0.008) }                // pad on the surface, not poking out
+                        for t in stride(from: Float(0.25), through: 1, by: 0.25) { cost += max(0, 0.0065 - outside(s + (e - s) * t)) }
+                        if k > 0 { cost += 0.15 * abs(outside((s + e) / 2) - 0.0065) }   // middle and tip segments rest on it
+                        if k == 2 { cost += 0.15 * abs(outside(e) - 0.0065) }                // pad on the surface, not poking out
                     }
                     if cost < best.cost { best = (cost, a) }
                 } }
@@ -276,13 +276,15 @@ final class HandModel {
         apply()
     }
     private var target: [simd_quatf] = [], shown: [simd_quatf] = [], lastStep: CFTimeInterval = 0
-    /// Index fingertip pad in grip space (the menu's direct touch tracks it).
-    private(set) var indexTip = SIMD3<Float>.zero
+    /// Index fingertip pad in grip space (the menu's direct touch tracks it); thumb pad likewise.
+    private(set) var indexTip = SIMD3<Float>.zero, thumbTip = SIMD3<Float>.zero
 
     private func apply() {
         let m = worldMatrices()
         let tip = posed(m, joints[3][3] + simd_normalize(joints[3][3] - joints[3][2]) * 0.004, 12), tg = node.simdTransform * SIMD4(tip, 1)
         indexTip = SIMD3(tg.x, tg.y, tg.z)
+        let th = node.simdTransform * SIMD4(posed(m, joints[4][3], 15), 1)
+        thumbTip = SIMD3(th.x, th.y, th.z)
         var v = [SIMD3<Float>](), n = [SIMD3<Float>]()
         v.reserveCapacity(rest.count); n.reserveCapacity(rest.count)
         for (i, p) in rest.enumerated() {
