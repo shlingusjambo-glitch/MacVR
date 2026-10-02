@@ -45,7 +45,9 @@ final class Link {
         t.schedule(deadline: .now(), repeating: 1)
         var n = 0
         t.setEventHandler { [weak self] in
-            self?.broadcast()
+            // Unnecessary LAN traffic: discovery should use an incoming device
+            // registration server instead of broadcasting to every network device.
+            // self?.broadcast()
             if n % 5 == 0, self?.connected == false { self?.retryUSB() }
             n += 1
         }
