@@ -38,7 +38,7 @@ final class HandModel {
     /// thumb reaches the stick and face buttons (tools/handfit).
     typealias Placement = (pos: SIMD3<Float>, rot: simd_quatf)
     static var place: [HeadsetModel: Placement] = [
-        .quest1: (SIMD3(-0.0460, -0.0186, 0.0227), simd_quatf(vector: SIMD4(0.1868, 0.9021, 0.3360, -0.1962))),   // placed by hand in the tuner
+        .quest1: (SIMD3(-0.0333, -0.0042, 0.0382), simd_quatf(vector: SIMD4(0.0652, 0.9526, 0.1620, -0.2491))),   // placed by hand in the tuner
         .quest2: (SIMD3(-0.0413, 0.0163, 0.0278), simd_quatf(vector: SIMD4(0.1946, 0.8872, 0.3815, 0.1718))),
         .quest3: (SIMD3(-0.0394, 0.0080, -0.0012), simd_quatf(vector: SIMD4(0.0995, 0.9100, 0.3848, 0.1184))),
     ]
@@ -46,7 +46,9 @@ final class HandModel {
     static let savedURL = appSupport.appendingPathComponent("hand-placement.json")
     /// Manual per-bone adjustments from the tuner (radians about each joint's hinge, added after the automatic pose):
     /// 15 per controller mesh, pinky/ring/middle/index/thumb x knuckle/middle/tip.
-    static var boneOffsets: [HeadsetModel: [Float]] = [:]
+    static var boneOffsets: [HeadsetModel: [Float]] = [   // tuned by hand in the tuner
+        .quest1: [0.8552, -1.2043, -1.2043, 0.6109, -0.6109, 0.2443, 0.1396, 0.1745, -0.1396, 0, 0, 0, 0, 0, 0],
+    ]
     /// Look: fill RGB, edge RGB, fill opacity, edge opacity, edge width (0-1).
     static var look: [Float] = [0.17, 0.18, 0.2, 0.78, 0.8, 0.83, 0.68, 0.85, 0.5]
     private static let modelKeys: [String: HeadsetModel] = ["quest1": .quest1, "quest2": .quest2, "quest3": .quest3]
