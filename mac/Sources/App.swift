@@ -163,12 +163,14 @@ struct SettingsView: View {
         ("general", "General", "gearshape.fill", 0x8e8e93, 0x636366), ("video", "Display & Video", "display", 0x3aa0ff, 0x1467e0),
         ("controllers", "Controllers", "gamecontroller.fill", 0xb07cff, 0x7040e0), ("audio", "Audio", "speaker.wave.2.fill", 0xff6b8b, 0xe0386a),
         ("environment", "Environment", "mountain.2.fill", 0x4fd18b, 0x1f9d5c), ("menu", "Universal Menu", "square.grid.3x3.fill", 0xffb23d, 0xf07b12),
+        ("accessibility", "Accessibility", "accessibility", 0x2a73f5, 0x1a4fb8),
         ("games", "Games", "square.stack.3d.up.fill", 0x2f5b9e, 0x16274a), ("about", "About", "info.circle.fill", 0x6b7685, 0x4a5462),
     ]
     static let keys: [String: [String]] = [
-        "general": ["render_scale", "refresh_rate"], "video": ["bitrate", "codec", "show_fps"],
+        "general": ["render_scale", "refresh_rate"], "video": ["bitrate", "codec", "show_fps", "perf_hud", "theater_screen", "theater_curved", "theater_lights"],
         "controllers": ["controller_model", "system_button"], "environment": ["home_style", "floor_grid"],
-        "menu": ["menu_style", "direct_touch", "dashboard_position", "ui_curved", "show_desktop_tabs", "show_settings_tab", "show_power"],
+        "menu": ["menu_style", "direct_touch", "dashboard_position", "ui_curved", "dnd", "show_desktop_tabs", "show_settings_tab", "show_power"],
+        "accessibility": ["text_size", "high_contrast", "reduce_motion", "left_handed"],
     ]
 
     var body: some View {
@@ -223,7 +225,10 @@ struct SettingsView: View {
     @ViewBuilder private func row(_ key: String) -> some View {
         if let it = Settings.items[key] {
             HStack {
-                Text(it.label).font(.system(size: 13)).foregroundColor(.white)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(it.label).font(.system(size: 13)).foregroundColor(.white)
+                    if !it.info.isEmpty { Text(it.info).font(.system(size: 11)).foregroundColor(OS.dim).fixedSize(horizontal: false, vertical: true) }
+                }
                 Spacer()
                 if it.options == Settings.offOn {
                     Toggle("", isOn: Binding(get: { settings.values[key] == "On" }, set: { settings.set(key, $0 ? "On" : "Off") })).toggleStyle(.switch).labelsHidden()

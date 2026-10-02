@@ -106,7 +106,7 @@ final class Compositor {
             laser.geometry?.firstMaterial?.diffuse.contents = NSColor(red: 0.4, green: 0.75, blue: 0.96, alpha: 1)
             laser.geometry?.firstMaterial?.lightingModel = .constant
             aim.addChildNode(laser)
-            let dot = SCNNode(geometry: SCNSphere(radius: 0.007)); dot.geometry?.firstMaterial?.lightingModel = .constant
+            let dot = Compositor.cursor()
             [grip, aim, dot].forEach(scene.rootNode.addChildNode)
             hands.append((grip, aim, laser, dot))
         }
@@ -146,8 +146,8 @@ final class Compositor {
     /// Plane of width w wrapped around a cylinder of radius r whose axis passes through the viewer; texture v=0 at top.
     /// Settings > Universal Menu > Curved UI. Off = flat panels.
     static var curved = true
-    static func bent(w: Float, h: Float, r: Float, seg: Int = 64, v0: CGFloat = 0, v1: CGFloat = 1) -> SCNGeometry {
-        var v: [SCNVector3] = [], t: [CGPoint] = [], idx: [Int32] = []
+    static func bent(w: Float, h: Float, r: Float, seg: Int = 64, v0: CGFloat = 0, v1: CGFloat = 1, curve: Bool? = nil) -> SCNGeometry {   // curve: override Curved UI
+        var v: [SCNVector3] = [], t: [CGPoint] = [], idx: [Int32] = []; let curved = curve ?? Compositor.curved
         for i in 0...seg {
             let u = Float(i) / Float(seg), a = (u - 0.5) * w / r
             let x = curved ? CGFloat(r * sin(a)) : CGFloat((u - 0.5) * w), z = curved ? CGFloat(r - r * cos(a)) : 0
@@ -192,6 +192,7 @@ final class Compositor {
             built[ObjectIdentifier(n)] = r
             let old = n.geometry?.firstMaterial?.diffuse.contents
             n.geometry = Compositor.bent(w: w, h: ph, r: r, v0: v0, v1: v1)
+            if let k = [sides[0], panel, sides[1]].firstIndex(where: { $0 === n }) { slotDim[k] = 1 }   // fresh material: undimmed
             guard let mat = n.geometry?.firstMaterial else { continue }   // the menu texture has transparent gaps around the window, bars and dock
             mat.diffuse.contents = old; mat.blendMode = .alpha; mat.writesToDepthBuffer = false
             mat.diffuse.mipFilter = .linear; mat.diffuse.maxAnisotropy = 16   // readable text when the panel is far/small
@@ -363,6 +364,138 @@ final class Compositor {
         space.opacity = f.from * (1 - t * t * (3 - 2 * t))   // smoothstep
         if t >= 1 { space.isHidden = true; spaceFade = nil }
     }
+
+    // MARK: transitions: the old sky fades out over the new one (Spaces, theater, game loading); a veil fades home in
+    /// Settings > Universal Menu > Reduce Motion: no fades, hops or glides; things just appear.
+    var reduceMotion = false
+    let skyFade = SCNNode()
+    private let veil = SCNNode()
+    private var skyFadeStart: CFTimeInterval = 0, veilStart: CFTimeInterval = 0, archShown: CGFloat = 1
+    private var archFade: (from: CGFloat, to: CGFloat, start: CFTimeInterval) = (1, 1, 0)
+    /// A sphere that shows a panorama exactly like `scene.background` does (same equirect mapping), seen from inside.
+    static func skySphere(radius: CGFloat) -> SCNNode {
+        let g = SCNSphere(radius: radius); g.segmentCount = 96
+        let m = g.firstMaterial!; m.lightingModel = .constant
+        m.cullMode = .front; m.writesToDepthBuffer = false; m.readsFromDepthBuffer = false
+        m.diffuse.contentsTransform = SCNMatrix4MakeScale(-1, 1, 1); m.diffuse.wrapS = .repeat   // seen from inside
+        let n = SCNNode(geometry: g); n.simdEulerAngles = SIMD3(0, skyYaw, 0); return n
+    }
+    static var skyYaw: Float = -.pi / 2   // SCNSphere's u = 0 seam vs the background's (checked by Tests/ShellTest)
+    /// Call right before the background changes: what it shows now fades out over 0.8 s.
+    private func fadeFromCurrentSky() {
+        guard !reduceMotion, let old = scene.background.contents else { return }
+        if skyFade.geometry == nil {
+            let s = Compositor.skySphere(radius: 120); skyFade.geometry = s.geometry; skyFade.simdEulerAngles = s.simdEulerAngles
+            skyFade.renderingOrder = -140; scene.rootNode.addChildNode(skyFade)   // after the background, before everything else
+        }
+        skyFade.geometry?.firstMaterial?.diffuse.contents = old
+        skyFade.opacity = 1; skyFade.isHidden = false; skyFadeStart = CACurrentMediaTime()
+    }
+    // Game loading: the home fades into a dark starfield with the game's card and a spinner, until its first frame.
+    private let splash = SCNNode(), spinner = SCNNode()
+    private var splashStart: CFTimeInterval = 0
+    private(set) var loading = false
+    private static let loadingSky: CGImage = {   // the tour's starfield, dimmed
+        let s = starfield(), c = CGContext(data: nil, width: s.width, height: s.height, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                           bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        c.draw(s, in: CGRect(x: 0, y: 0, width: s.width, height: s.height))
+        c.setFillColor(CGColor(gray: 0, alpha: 0.45)); c.fill(CGRect(x: 0, y: 0, width: s.width, height: s.height))
+        return c.makeImage()!
+    }()
+    /// `title` non-nil: show the loading space and card 1.8 m ahead of `head`; nil: back to the home environment.
+    func setLoading(_ title: String?, art: CGImage? = nil, head: VR4Pose? = nil) {
+        guard let title else {
+            guard loading else { return }
+            loading = false; splash.isHidden = true
+            if scene.background.contents != nil { let e = envName; envName = ""; setEnvironment(e) }   // crossfades back
+            return
+        }
+        if splash.parent == nil {
+            scene.rootNode.addChildNode(splash); splash.addChildNode(spinner)
+            let g = SCNPlane(width: 0.11, height: 0.11), m = g.firstMaterial!
+            let c = Compositor.overlayCanvas(128, 128)   // a 270 degree arc
+            c.setStrokeColor(CGColor(gray: 1, alpha: 0.9)); c.setLineWidth(10); c.setLineCap(.round)
+            c.addArc(center: CGPoint(x: 64, y: 64), radius: 52, startAngle: 0, endAngle: .pi * 1.5, clockwise: false); c.strokePath()
+            m.diffuse.contents = c.makeImage(); m.lightingModel = .constant; m.isDoubleSided = true; m.writesToDepthBuffer = false
+            spinner.geometry = g; spinner.renderingOrder = 21
+        }
+        let card = Compositor.loadingCard(title, art: art), w: CGFloat = 0.9, h = w * CGFloat(card.height) / CGFloat(card.width)
+        let g = SCNPlane(width: w, height: h); g.cornerRadius = 0
+        let m = g.firstMaterial!; m.diffuse.contents = card; m.lightingModel = .constant; m.isDoubleSided = true; m.writesToDepthBuffer = false
+        splash.geometry = g; splash.renderingOrder = 20
+        spinner.simdPosition = SIMD3(0, -Float(h) / 2 - 0.12, 0)
+        if let head {
+            let f = simd_quatf(ix: head.qx, iy: head.qy, iz: head.qz, r: head.qw).act(SIMD3<Float>(0, 0, -1)), yaw = atan2(-f.x, -f.z)
+            splash.simdPosition = SIMD3(head.px - sin(yaw) * 1.8, head.py - 0.05, head.pz - cos(yaw) * 1.8)
+            splash.simdEulerAngles = SIMD3(0, yaw, 0)
+        }
+        if !loading && scene.background.contents != nil { fadeFromCurrentSky(); scene.background.contents = Compositor.loadingSky; grid.isHidden = true }
+        loading = true; splash.isHidden = false; splashStart = CACurrentMediaTime()
+    }
+    /// The loading card: the game's Steam header (or a colour tile with its initial), its name and "Starting…".
+    static func loadingCard(_ title: String, art: CGImage?) -> CGImage {
+        let W = 1024, artH = 479, H = artH + 230   // header art is 460 x 215
+        let c = overlayCanvas(W, H), r = CGRect(x: 0, y: 0, width: W, height: H)
+        c.addPath(CGPath(roundedRect: r, cornerWidth: 44, cornerHeight: 44, transform: nil)); c.clip()
+        c.setFillColor(CGColor(srgbRed: 0.09, green: 0.1, blue: 0.13, alpha: 0.96)); c.fill(r)
+        let ar = CGRect(x: 0, y: H - artH, width: W, height: artH)
+        if let art { c.draw(art, in: ar) } else {
+            c.saveGState(); c.clip(to: ar)
+            c.drawLinearGradient(CGGradient(colorsSpace: nil, colors: [CGColor(srgbRed: 0.24, green: 0.2, blue: 0.5, alpha: 1), CGColor(srgbRed: 0.08, green: 0.3, blue: 0.55, alpha: 1)] as CFArray, locations: [0, 1])!,
+                                 start: CGPoint(x: 0, y: ar.maxY), end: CGPoint(x: CGFloat(W), y: ar.minY), options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+            c.restoreGState()
+            draw(String(title.prefix(1)).uppercased(), in: c, at: CGPoint(x: ar.midX, y: ar.midY - 70), size: 200, bold: true, align: 0.5)
+        }
+        draw(title, in: c, at: CGPoint(x: 48, y: 120), size: 64, bold: true, maxW: CGFloat(W) - 96)
+        draw("Starting…", in: c, at: CGPoint(x: 48, y: 52), size: 40, color: CGColor(srgbRed: 0.7, green: 0.74, blue: 0.8, alpha: 1))
+        return c.makeImage()!
+    }
+    /// One line of the shell's rounded type into a y-up context (baseline at `at`), shortened with … to `maxW`.
+    static func draw(_ s: String, in c: CGContext, at: CGPoint, size: CGFloat, bold: Bool = false, color: CGColor = CGColor(gray: 1, alpha: 1), align: CGFloat = 0, maxW: CGFloat = 1e5) {
+        var font = NSFont.systemFont(ofSize: size, weight: bold ? .semibold : .medium)
+        if let d = font.fontDescriptor.withDesign(.rounded) { font = NSFont(descriptor: d, size: size) ?? font }
+        func line(_ s: String) -> CTLine { CTLineCreateWithAttributedString(NSAttributedString(string: s, attributes: [.font: font, .foregroundColor: NSColor(cgColor: color) ?? .white])) }
+        var str = s, l = line(s)
+        while CTLineGetTypographicBounds(l, nil, nil, nil) > maxW, str.count > 1 { str = String(str.dropLast(2)) + "…"; l = line(str) }
+        c.textPosition = CGPoint(x: at.x - CGFloat(CTLineGetTypographicBounds(l, nil, nil, nil)) * align, y: at.y); CTLineDraw(l, c)
+    }
+    /// Home comes back from black (leaving a game) over 0.6 s.
+    func fadeInHome() {
+        guard !reduceMotion else { return }
+        if veil.geometry == nil {   // a small black sphere around the eyes, drawn over everything
+            let g = SCNSphere(radius: 0.3); g.segmentCount = 24
+            let m = g.firstMaterial!; m.diffuse.contents = NSColor.black; m.lightingModel = .constant; m.cullMode = .front
+            m.writesToDepthBuffer = false; m.readsFromDepthBuffer = false
+            veil.geometry = g; veil.renderingOrder = 1000; scene.rootNode.addChildNode(veil)
+        }
+        veil.isHidden = false; veil.opacity = 1; veilStart = CACurrentMediaTime()
+    }
+    private func animateTransitions(head: SIMD3<Float>) {
+        if !skyFade.isHidden && skyFade.parent != nil {
+            let t = CGFloat(min(1, (CACurrentMediaTime() - skyFadeStart) / 0.8))
+            skyFade.opacity = 1 - t * t * (3 - 2 * t)
+            if t >= 1 { skyFade.isHidden = true; skyFade.geometry?.firstMaterial?.diffuse.contents = nil }
+        }
+        if !veil.isHidden && veil.parent != nil {
+            veil.simdPosition = head
+            let t = CGFloat(min(1, (CACurrentMediaTime() - veilStart) / 0.6))
+            veil.opacity = 1 - t * t
+            if t >= 1 { veil.isHidden = true }
+        }
+        if loading && !splash.isHidden {   // the card fades in; the spinner turns
+            let t = Float(CACurrentMediaTime() - splashStart)
+            splash.opacity = reduceMotion ? 1 : CGFloat(min(1, t / 0.4))
+            spinner.simdEulerAngles = SIMD3(0, 0, -t * 5)
+        }
+        // home architecture fades with the sky (theater, loading) over 0.6 s; under a game backdrop it goes at once
+        let want: CGFloat = homeOccluded ? 0 : 1
+        if want != archFade.to { archFade = (archShown, want, CACurrentMediaTime()) }
+        let k = CGFloat(min(1, (CACurrentMediaTime() - archFade.start) / 0.6))
+        archShown = reduceMotion || scene.background.contents == nil ? want : archFade.from + (want - archFade.from) * k
+        SCNTransaction.begin(); SCNTransaction.animationDuration = 0
+        homeArchitecture.opacity = archShown; homeArchitecture.isHidden = archShown <= 0
+        SCNTransaction.commit()
+    }
     /// Procedural deep-space panorama: dark blue-black sky, two soft nebulae, a few thousand stars.
     static func starfield() -> CGImage {
         let w = 4096, h = 2048
@@ -396,7 +529,7 @@ final class Compositor {
     /// Kept outside the interaction area; no moving scenery or per-frame mesh work.
     private let homeArchitecture = SCNNode()
     private var homeStyle = ""
-    private var homeOccluded: Bool { scene.background.contents == nil || (theater.parent != nil && !theater.isHidden) || (space.parent != nil && !space.isHidden) }
+    private var homeOccluded: Bool { scene.background.contents == nil || (theater.parent != nil && !theater.isHidden && theaterStyle.lights != "Home") || (space.parent != nil && !space.isHidden) || loading }
     func setHomeStyle(_ style: String) {
         guard homeStyle != style else { return }
         SCNTransaction.begin(); SCNTransaction.animationDuration = 0
@@ -481,10 +614,13 @@ final class Compositor {
         var contents: Any = Compositor.sky(), isVoid = true   // (`is CGImage` is always true for CF types, so track it)
         if let f = Dashboard.envFile(name), let url = Bundle.main.url(forResource: f, withExtension: "jpg", subdirectory: "environments"),
            let img = NSImage(contentsOf: url) { contents = img; isVoid = false }
-        if scene.background.contents != nil { scene.background.contents = contents }   // nil = a game is behind the menu
+        if theater.parent != nil && !theater.isHidden && scene.background.contents != nil {   // in the theater: the room keeps its lights
+            skyContents = contents; voidEnv = isVoid; applyTheaterLights(); return
+        }
+        if scene.background.contents != nil && !loading { fadeFromCurrentSky(); scene.background.contents = contents }   // nil = a game is behind the menu
         skyContents = contents
         voidEnv = isVoid
-        grid.isHidden = !gridOn || !isVoid || scene.background.contents == nil
+        grid.isHidden = !gridOn || !isVoid || scene.background.contents == nil || loading
     }
     private var voidEnv = true
     private lazy var dashQueue = device.makeCommandQueue()
@@ -521,7 +657,7 @@ final class Compositor {
         return t
     }
     private var gridOn = true
-    func setGrid(_ on: Bool) { gridOn = on; grid.isHidden = !on || !voidEnv || scene.background.contents == nil }
+    func setGrid(_ on: Bool) { gridOn = on; grid.isHidden = !on || !voidEnv || scene.background.contents == nil || loading }
 
     // MARK: grab bars: the window or the dock follows the pointer ray while the trigger is held
     private var grabPart = Part.window, grabDist0: Float = 1, grabScale: Float = 1, grabLocal = SIMD3<Float>(0, 0, 0)
@@ -683,16 +819,21 @@ final class Compositor {
         slotNode(to).simdTransform = released
         return (dragSlot, to)
     }
-    /// Per frame: glide a released window into its slot (ease-out, 0.22 s), fade the frames, play the open "jump".
+    /// Per frame: a released window springs into its slot (slight overshoot, settled in ~0.4 s) and the frames fade.
     private func tickSlots() {
         if let s = settle {
-            let t = Float(min(1, (CACurrentMediaTime() - s.start) / 0.22)), e = 1 - pow(1 - t, 3)
+            let t = Float(CACurrentMediaTime() - s.start), e = reduceMotion ? 1 : Compositor.spring(t)
             var m = s.from
             for c in 0..<4 { m[c] = s.from[c] + (s.to[c] - s.from[c]) * e }
             s.node.simdTransform = m
-            slotsNode.opacity = CGFloat(1 - t)
-            if t >= 1 { settle = nil; slotsNode.isHidden = true; layoutSides(); win.simdTransform = slotTransform(1) }
+            slotsNode.opacity = CGFloat(max(0, 1 - t / 0.25))
+            if t >= 0.45 || reduceMotion { settle = nil; slotsNode.isHidden = true; layoutSides(); win.simdTransform = slotTransform(1) }
         }
+    }
+    /// Damped spring step response (0 -> 1, ~6% overshoot, within 1% by 0.4 s).
+    static func spring(_ t: Float) -> Float {
+        let w: Float = 18, z: Float = 0.68, wd = w * (1 - z * z).squareRoot()
+        return t <= 0 ? 0 : 1 - exp(-z * w * t) * (cos(wd * t) + z * w / wd * sin(wd * t))
     }
     private var jumpStart: CFTimeInterval = -10
     /// A new app replaced the centre window: it hops.
@@ -706,6 +847,9 @@ final class Compositor {
 
     // MARK: open/close motion (Quest Universal Menu): a quick fade with a tiny settle, no flying across the room
     private var popStart: CFTimeInterval = 0, popDock = false, closeStart: CFTimeInterval = 0, shown = true
+    private var slotFocus = 1, slotDim: [CGFloat] = [1, 1, 1]
+    /// The multitasking window (0 left, 1 centre, 2 right) being pointed at or touched.
+    func setSlotFocus(_ slot: Int) { slotFocus = slot }
     func pop(dock: Bool) { popStart = CACurrentMediaTime(); popDock = dock }
     /// Show/hide the whole shell; hiding fades it out quickly (inverse of opening) before it disappears.
     func setDashVisible(_ on: Bool) {
@@ -713,12 +857,13 @@ final class Compositor {
         else if shown { shown = false; closeStart = CACurrentMediaTime() }
     }
     private func animate() {
-        let t = Float(min(1, (CACurrentMediaTime() - popStart) / 0.16)), e = 1 - pow(1 - t, 3)   // ease-out cubic, 160 ms
+        let rm = reduceMotion
+        let t = rm ? 1 : Float(min(1, (CACurrentMediaTime() - popStart) / 0.16)), e = 1 - pow(1 - t, 3)   // ease-out cubic, 160 ms
         winContent.simdPosition = SIMD3(0, -0.025 * (1 - e), 0)
         winContent.simdScale = SIMD3(repeating: 0.97 + 0.03 * e)
         winContent.opacity = CGFloat(e)
         let j = Float((CACurrentMediaTime() - jumpStart) / 0.34)
-        if j >= 0 && j < 1 {   // a new app replaced the centre window: a quick hop up and back with a slight squash
+        if j >= 0 && j < 1 && !rm {   // a new app replaced the centre window: a quick hop up and back with a slight squash
             winContent.simdPosition.y += 0.035 * sin(.pi * j) * (1 - j * 0.3)
             winContent.simdScale *= 1 - 0.04 * sin(.pi * j)
         }
@@ -726,10 +871,16 @@ final class Compositor {
         dockPanel.simdPosition = SIMD3(0, -0.015 * (1 - de), 0)
         dockPanel.simdScale = SIMD3(repeating: 0.98 + 0.02 * de)
         dockPanel.opacity = CGFloat(de)
-        let ke = 1 - pow(1 - Float(min(1, (CACurrentMediaTime() - kbPop) / 0.16)), 3)
+        let ke = rm ? 1 : 1 - pow(1 - Float(min(1, (CACurrentMediaTime() - kbPop) / 0.16)), 3)
         kbPanel.simdPosition = SIMD3(0, -0.02 * (1 - ke), 0); kbPanel.opacity = CGFloat(ke)
+        // multitasking focus: with side windows open, the one you last pointed at is lit and the others dim a little
+        let anySide = sides.contains { !$0.isHidden }
+        for (k, n) in [(0, sides[0]), (1, panel), (2, sides[1])] {
+            let want: CGFloat = !anySide || k == slotFocus ? 1 : 0.8, v = rm ? want : slotDim[k] + (want - slotDim[k]) * 0.2
+            if abs(v - slotDim[k]) > 0.002 || (v == want && slotDim[k] != want) { slotDim[k] = v; n.geometry?.firstMaterial?.multiply.contents = NSColor(white: v, alpha: 1) }
+        }
         if !shown && !dash.isHidden {   // close: 120 ms fade
-            let c = min(1, (CACurrentMediaTime() - closeStart) / 0.12)
+            let c = rm ? 1 : min(1, (CACurrentMediaTime() - closeStart) / 0.12)
             dash.opacity = CGFloat(1 - c)
             if c >= 1 { dash.isHidden = true; dash.opacity = 1 }
         }
@@ -753,6 +904,134 @@ final class Compositor {
         resetLayout()
     }
 
+    // MARK: Mac windows in VR: a floating panel per Mac app window, with a soft shadow and a bar under it (move, keyboard,
+    // pin, close). Shown with the menu; pinned ones stay when it closes. The window picker floats in front of the menu.
+    final class WindowPanel {
+        let root = SCNNode(), content = SCNNode(), bar = SCNNode(), shadow = SCNNode()
+        var mip: MTLTexture?, last: CVPixelBuffer?, aspect: CGFloat = 0, width: Float = 1, pinned = false, dim: CGFloat = 1
+    }
+    private(set) var windowPanels: [CGWindowID: WindowPanel] = [:]
+    private let picker = SCNNode()
+    private var windowsShown = true, focusedWindow: CGWindowID?
+    /// A new panel ~0.95 m ahead of `head` (fanned out to the sides when there are several), `width` metres wide.
+    func addWindow(_ id: CGWindowID, width: Float, head: VR4Pose) {
+        guard windowPanels[id] == nil else { return }
+        let p = WindowPanel(); p.width = width
+        p.root.addChildNode(p.shadow); p.root.addChildNode(p.content); p.root.addChildNode(p.bar)
+        let sm = SCNMaterial(); sm.diffuse.contents = Compositor.glow(soft: 0.35); sm.multiply.contents = NSColor.black; sm.transparency = 0.55
+        sm.lightingModel = .constant; sm.writesToDepthBuffer = false; sm.isDoubleSided = true
+        let sg = SCNPlane(width: 1, height: 1); sg.materials = [sm]; p.shadow.geometry = sg; p.shadow.renderingOrder = 8
+        p.content.renderingOrder = 12; p.bar.renderingOrder = 13
+        let bg = SCNPlane(width: CGFloat(min(width, 0.75)), height: CGFloat(min(width, 0.75)) * CGFloat(MacWindows.barH) / CGFloat(MacWindows.barW))
+        bg.firstMaterial?.lightingModel = .constant; bg.firstMaterial?.isDoubleSided = true; bg.firstMaterial?.writesToDepthBuffer = false
+        p.bar.geometry = bg
+        let f = simd_quatf(ix: head.qx, iy: head.qy, iz: head.qz, r: head.qw).act(SIMD3<Float>(0, 0, -1))
+        let fan: [Float] = [-0.62, 0.62, -1.15, 1.15, -0.3, 0.3], yaw = atan2(-f.x, -f.z) + fan[windowPanels.count % fan.count]   // beside the menu: right, left, ...
+        let h = SIMD3(head.px, head.py, head.pz)
+        p.root.simdPosition = h + SIMD3(-sin(yaw) * 1.0, -0.04, -cos(yaw) * 1.0)
+        p.root.simdOrientation = simd_quatf(angle: yaw, axis: SIMD3(0, 1, 0))
+        scene.rootNode.addChildNode(p.root); windowPanels[id] = p; focusedWindow = id
+    }
+    func removeWindow(_ id: CGWindowID) { windowPanels.removeValue(forKey: id)?.root.removeFromParentNode() }
+    /// Latest capture of the window, and (when it changed) its bar image.
+    func setWindow(_ id: CGWindowID, _ pb: CVPixelBuffer?, bar: CGImage?) {
+        guard let p = windowPanels[id] else { return }
+        if let bar { p.bar.geometry?.firstMaterial?.diffuse.contents = bar }
+        guard let pb, let tex = mipmap(pb, &p.mip, &p.last) else { return }
+        let aspect = CGFloat(CVPixelBufferGetWidth(pb)) / CGFloat(max(1, CVPixelBufferGetHeight(pb)))
+        if abs(aspect - p.aspect) > 0.001 || p.content.geometry == nil {   // (re)size to the window's shape
+            p.aspect = aspect
+            let h = p.width / Float(aspect)
+            p.content.geometry = Compositor.bent(w: p.width, h: h, r: 1, seg: 1, curve: false)
+            p.shadow.simdScale = SIMD3(p.width * 1.12, h * 1.14 + 0.03, 1); p.shadow.simdPosition = SIMD3(0, -0.015, -0.03)
+            let bh = Float((p.bar.geometry as? SCNPlane)?.height ?? 0.06)
+            p.bar.simdPosition = SIMD3(0, -h / 2 - bh / 2 - 0.018, 0.005)
+        }
+        if let m = p.content.geometry?.firstMaterial {
+            m.diffuse.contents = tex; m.diffuse.mipFilter = .linear; m.diffuse.maxAnisotropy = 16; m.writesToDepthBuffer = false
+            m.multiply.contents = NSColor(white: p.dim, alpha: 1)
+        }
+    }
+    func setWindowPinned(_ id: CGWindowID, _ on: Bool) { windowPanels[id]?.pinned = on }
+    /// Per frame: panels show with the menu (pinned ones always); the window you last used is lit, the others dimmed a little.
+    func showWindows(menu: Bool, focus: CGWindowID?) {
+        windowsShown = menu; if let focus { focusedWindow = focus }
+        for (id, p) in windowPanels {
+            p.root.isHidden = !(menu || p.pinned)
+            let want: CGFloat = id == focusedWindow || windowPanels.count == 1 ? 1 : 0.78
+            p.dim += (want - p.dim) * (reduceMotion ? 1 : 0.2)
+            p.content.geometry?.firstMaterial?.multiply.contents = NSColor(white: p.dim, alpha: 1)
+        }
+        if !menu { picker.isHidden = true }
+    }
+    /// Nearest Mac window under a ray: its id, uv on the window (or on its bar), distance.
+    func hitWindow(_ aim: VR4Pose, only: CGWindowID? = nil) -> (id: CGWindowID, uv: CGPoint, dist: Float, bar: Bool)? {
+        let (o, d) = ray(aim)
+        var best: (id: CGWindowID, uv: CGPoint, dist: Float, bar: Bool)?
+        for (id, p) in windowPanels where !p.root.isHidden && (only == nil || only == id) {
+            for (n, isBar) in [(p.content, false), (p.bar, true)] where n.geometry != nil {
+                let a = n.simdConvertPosition(o, from: nil), b = n.simdConvertPosition(o + d * 10, from: nil)
+                guard let h = n.hitTestWithSegment(from: SCNVector3(a), to: SCNVector3(b), options: [SCNHitTestOption.backFaceCulling.rawValue: false]).first else { continue }
+                let dist = simd_distance(o, h.simdWorldCoordinates)
+                if dist < best?.dist ?? .infinity { best = (id, h.textureCoordinates(withMappingChannel: 0), dist, isBar) }
+            }
+        }
+        return best
+    }
+    // moving a window by its bar: the grabbed point rides the ray at its distance, the panel turns to face you
+    private var winGrab: (id: CGWindowID, local: SIMD3<Float>, dist: Float, rot0: simd_quatf, start: CFTimeInterval)?
+    func beginWindowMove(_ id: CGWindowID, _ aim: VR4Pose, dist: Float) {
+        guard let p = windowPanels[id] else { return }
+        let (o, d) = ray(aim)
+        winGrab = (id, p.root.simdConvertPosition(o + d * dist, from: nil), dist, p.root.simdWorldOrientation, CACurrentMediaTime())
+    }
+    func updateWindowMove(_ aim: VR4Pose, head: VR4Pose, push: Float) {
+        guard var g = winGrab, let p = windowPanels[g.id] else { return }
+        g.dist = min(3, max(0.35, g.dist + push)); winGrab = g
+        let (o, d) = ray(aim), at = o + d * g.dist, h = SIMD3(head.px, head.py, head.pz), k = Float(min(1, (CACurrentMediaTime() - g.start) / 0.15))
+        var rot = g.rot0, centre = p.root.simdWorldPosition
+        for _ in 0..<3 {   // face the head from the window's centre (not the grabbed point on its bar): settle the circular dependency
+            let v = h - centre
+            let want = simd_quatf(angle: atan2(v.x, v.z), axis: SIMD3(0, 1, 0)) * simd_quatf(angle: -atan2(v.y, simd_length(SIMD2(v.x, v.z))), axis: SIMD3(1, 0, 0))
+            rot = simd_slerp(g.rot0, want, k); centre = at - rot.act(g.local * p.root.simdScale.x)
+        }
+        p.root.simdWorldOrientation = rot; p.root.simdWorldPosition = centre
+    }
+    func endWindowMove() { winGrab = nil }
+    /// Resize (stick left/right while pointing at it, or both hands pulling apart): scale clamped 0.4x-3x.
+    func scaleWindow(_ id: CGWindowID, by k: Float) {
+        guard let p = windowPanels[id] else { return }
+        p.root.simdScale = SIMD3(repeating: min(3, max(0.4, p.root.simdScale.x * k)))
+    }
+    func windowScale(_ id: CGWindowID) -> Float { windowPanels[id]?.root.simdScale.x ?? 1 }
+    func setWindowScale(_ id: CGWindowID, _ s: Float) { windowPanels[id]?.root.simdScale = SIMD3(repeating: min(3, max(0.4, s))) }
+
+    /// The window picker (nil hides it), placed 0.8 m ahead of `head` in front of the menu when it opens.
+    func showPicker(_ img: CGImage?, head: VR4Pose?) {
+        guard let img else { picker.isHidden = true; return }
+        if picker.geometry == nil {
+            let g = SCNPlane(width: 0.78, height: 0.78 * CGFloat(MacWindows.H) / CGFloat(MacWindows.W))
+            g.firstMaterial?.lightingModel = .constant; g.firstMaterial?.isDoubleSided = true; g.firstMaterial?.writesToDepthBuffer = false
+            picker.geometry = g; picker.renderingOrder = 30; scene.rootNode.addChildNode(picker)
+        }
+        picker.geometry?.firstMaterial?.diffuse.contents = img
+        if let head {
+            let f = simd_quatf(ix: head.qx, iy: head.qy, iz: head.qz, r: head.qw).act(SIMD3<Float>(0, 0, -1)), yaw = atan2(-f.x, -f.z)
+            picker.simdPosition = SIMD3(head.px - sin(yaw) * 0.8, head.py - 0.02, head.pz - cos(yaw) * 0.8)
+            picker.simdOrientation = simd_quatf(angle: yaw, axis: SIMD3(0, 1, 0))
+        }
+        picker.isHidden = false
+    }
+    var pickerShown: Bool { picker.parent != nil && !picker.isHidden }
+    func hitPicker(_ aim: VR4Pose) -> (uv: CGPoint, dist: Float)? {
+        guard pickerShown else { return nil }
+        let (o, d) = ray(aim)
+        let a = picker.simdConvertPosition(o, from: nil), b = picker.simdConvertPosition(o + d * 10, from: nil)
+        guard let h = picker.hitTestWithSegment(from: SCNVector3(a), to: SCNVector3(b), options: [SCNHitTestOption.backFaceCulling.rawValue: false]).first else { return nil }
+        let t = h.textureCoordinates(withMappingChannel: 0)
+        return (CGPoint(x: t.x, y: t.y), simd_distance(o, h.simdWorldCoordinates))
+    }
+
     // MARK: desktop screen inside the dashboard
     private var screenRect = CGRect.zero
     /// Live Mac screen laid exactly over `rect` (dashboard canvas px, horizontally centred) so pointer uv maps 1:1.
@@ -774,45 +1053,124 @@ final class Compositor {
     /// Retina desktop shown much smaller than its pixels: without mipmaps text aliases into mush, so each new capture
     /// is copied into a mipmapped texture (same queue as rendering, so it's ready before the next eye render).
     private func mipmapped(_ pb: CVPixelBuffer) -> MTLTexture? {
+        if avgBuf == nil { avgBuf = device.makeBuffer(length: 4, options: .storageModeShared) }
+        return mipmap(pb, &screenMip, &lastScreenPB, average: avgBuf)
+    }
+    /// Copies a new capture into `store` (a mipmapped texture it keeps per source) unless `last` is that same buffer.
+    /// `average`: also copy the 1x1 mip there, the picture's average colour (the theater's light spill reads it a frame later).
+    private func mipmap(_ pb: CVPixelBuffer, _ store: inout MTLTexture?, _ last: inout CVPixelBuffer?, average: MTLBuffer? = nil) -> MTLTexture? {
         guard let src = texture(pb, .bgra8Unorm_srgb) else { return nil }
-        if pb !== lastScreenPB {
-            lastScreenPB = pb
-            if screenMip?.width != src.width || screenMip?.height != src.height {
+        if pb !== last {
+            last = pb
+            if store?.width != src.width || store?.height != src.height {
                 let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm_srgb, width: src.width, height: src.height, mipmapped: true)
                 d.usage = .shaderRead; d.storageMode = .private
-                screenMip = device.makeTexture(descriptor: d)
+                store = device.makeTexture(descriptor: d)
             }
-            if let m = screenMip, let cb = cq.makeCommandBuffer(), let blit = cb.makeBlitCommandEncoder() {
+            if let m = store, let cb = cq.makeCommandBuffer(), let blit = cb.makeBlitCommandEncoder() {
                 blit.copy(from: src, sourceSlice: 0, sourceLevel: 0, to: m, destinationSlice: 0, destinationLevel: 0, sliceCount: 1, levelCount: 1)
-                blit.generateMipmaps(for: m); blit.endEncoding(); cb.commit()
+                blit.generateMipmaps(for: m)
+                if let b = average { blit.copy(from: m, sourceSlice: 0, sourceLevel: m.mipmapLevelCount - 1, sourceOrigin: MTLOrigin(), sourceSize: MTLSize(width: 1, height: 1, depth: 1),
+                                                to: b, destinationOffset: 0, destinationBytesPerRow: 4, destinationBytesPerImage: 4) }
+                blit.endEncoding(); cb.commit()
             }
         }
-        return screenMip
+        return store
+    }
+    private var avgBuf: MTLBuffer?
+    /// Average colour of the last screen capture (linear RGB, 0-1), from its smallest mip.
+    var screenAverage: SIMD3<Float> {
+        guard let p = avgBuf?.contents().assumingMemoryBound(to: UInt8.self) else { return .zero }
+        func lin(_ v: UInt8) -> Float { let c = Float(v) / 255; return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4) }
+        return SIMD3(lin(p[2]), lin(p[1]), lin(p[0]))   // BGRA
     }
 
-    // MARK: theater mode: flatscreen games / the Mac on a big curved screen in a dark room
-    private let theater = SCNNode()
-    private var theaterAspect: CGFloat = 0
+    // MARK: theater mode: flatscreen games / the Mac on a big screen. Size, curve and room lights from Settings;
+    // in a dark room the picture's colour spills onto the floor and glows around the screen.
+    private let theater = SCNNode(), spill = SCNNode(), halo = SCNNode()
+    private var theaterAspect: CGFloat = 0, spillColor = SIMD3<Float>(0, 0, 0)
+    struct TheaterStyle: Equatable { var width: Float = 6.4, distance: Float = 5, lift: Float = 0.3, curved = true, lights = "Dark" }
+    /// Settings > Theater: screen size preset, curve, and room lights (Dark, Dim, Home).
+    private(set) var theaterStyle = TheaterStyle()
+    static func theaterStyle(screen: String, curved: Bool, lights: String) -> TheaterStyle {
+        let p: [String: (Float, Float, Float)] = ["Small": (2.0, 2.2, 0), "Medium": (3.6, 3.4, 0.1), "Large": (6.4, 5, 0.3), "IMAX": (13, 8, 1.4)]
+        let (w, d, l) = p[screen] ?? p["Large"]!
+        return TheaterStyle(width: w, distance: d, lift: l, curved: curved, lights: lights)
+    }
+    func setTheaterStyle(_ s: TheaterStyle) {
+        guard s != theaterStyle else { return }
+        let lightsChanged = s.lights != theaterStyle.lights
+        theaterStyle = s; theater.geometry = nil; theaterAspect = 0   // rebuilt (and re-placed by the caller's `head`) on the next frame
+        if lightsChanged && !theater.isHidden { applyTheaterLights() }
+    }
+    private func applyTheaterLights() {
+        let s = theaterStyle
+        fadeFromCurrentSky()
+        scene.background.contents = s.lights == "Dark" ? NSColor(white: 0.015, alpha: 1) : s.lights == "Dim" ? dimmedPanorama() : skyContents ?? Compositor.sky()
+        grid.isHidden = s.lights != "Home" || !gridOn || !voidEnv
+    }
+    /// Theater "Dim" lights: a dark sphere just inside the sky (fades with the transitions).
+    /// Theater "Dim" lights: the home panorama, darkened (a 2048 px copy, made once per Space).
+    private var dimmedSky: (name: String, image: CGImage)?
+    private func dimmedPanorama() -> Any {
+        if let d = dimmedSky, d.name == envName { return d.image }
+        let src = skyContents ?? Compositor.sky()   // NSImage panorama, or the procedural CGImage (`as? CGImage` can't tell)
+        guard let cg = src is NSImage ? (src as! NSImage).cgImage(forProposedRect: nil, context: nil, hints: nil) : (src as! CGImage),
+              let c = CGContext(data: nil, width: 2048, height: 1024, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return src }
+        c.interpolationQuality = .medium
+        c.draw(cg, in: CGRect(x: 0, y: 0, width: 2048, height: 1024))
+        c.setFillColor(CGColor(gray: 0, alpha: 0.6)); c.fill(CGRect(x: 0, y: 0, width: 2048, height: 1024))   // sRGB 0.4 = ~16% light
+        guard let img = c.makeImage() else { return src }
+        dimmedSky = (envName, img); return img
+    }
     /// nil hides the theater (and restores the home environment). `head` re-centres the screen in front of you.
     func setTheater(_ pb: CVPixelBuffer?, head: VR4Pose?) {
-        if theater.parent == nil { scene.rootNode.addChildNode(theater); theater.isHidden = true }
+        if theater.parent == nil {
+            scene.rootNode.addChildNode(theater); theater.isHidden = true
+            for (n, img, order) in [(spill, Compositor.glow(soft: 0.5), -5), (halo, Compositor.glow(soft: 0.12), -6)] {
+                let g = SCNPlane(width: 1, height: 1), m = g.firstMaterial!
+                m.diffuse.contents = img; m.lightingModel = .constant; m.blendMode = .add; m.writesToDepthBuffer = false; m.isDoubleSided = true
+                n.geometry = g; n.renderingOrder = order; theater.addChildNode(n)
+            }
+        }
         guard let pb, let tex = mipmapped(pb) else {
             if !theater.isHidden { theater.isHidden = true; let e = envName; envName = ""; setEnvironment(e) }
             return
         }
-        let aspect = CGFloat(CVPixelBufferGetWidth(pb)) / CGFloat(max(1, CVPixelBufferGetHeight(pb)))
+        let s = theaterStyle, aspect = CGFloat(CVPixelBufferGetWidth(pb)) / CGFloat(max(1, CVPixelBufferGetHeight(pb))), h = s.width / Float(aspect)
         if aspect != theaterAspect || theater.geometry == nil {
             theaterAspect = aspect
-            theater.geometry = Compositor.bent(w: 6.4, h: 6.4 / Float(aspect), r: 5, seg: 96)
+            theater.geometry = Compositor.bent(w: s.width, h: h, r: s.distance, seg: 96, curve: s.curved)
             theater.geometry?.firstMaterial?.lightingModel = .constant
+            // light spill: a pool on the floor in front of the screen, and a halo just behind its edges
+            spill.simdScale = SIMD3(s.width * 1.3, s.distance * 1.2, 1); spill.simdEulerAngles = SIMD3(-.pi / 2, 0, 0)
+            halo.simdScale = SIMD3(s.width * 1.35, h * 1.6, 1); halo.simdPosition = SIMD3(0, 0, -0.05)
         }
-        if theater.isHidden || head != nil, let head {   // entering: put the screen 5 m ahead at eye height
+        if theater.isHidden || head != nil, let head {   // entering: put the screen ahead at eye height (plus the preset's lift)
             let f = simd_quatf(ix: head.qx, iy: head.qy, iz: head.qz, r: head.qw).act(SIMD3<Float>(0, 0, -1)), yaw = atan2(-f.x, -f.z)
-            theater.simdPosition = SIMD3(head.px - sin(yaw) * 5, head.py + 0.3, head.pz - cos(yaw) * 5)
+            theater.simdPosition = SIMD3(head.px - sin(yaw) * s.distance, head.py + s.lift, head.pz - cos(yaw) * s.distance)
             theater.simdEulerAngles = SIMD3(0, yaw, 0)
+            spill.simdPosition = SIMD3(0, 0.01 - theater.simdPosition.y, s.distance * 0.4)   // on the floor, between you and the screen
         }
-        if theater.isHidden { theater.isHidden = false; scene.background.contents = NSColor(white: 0.015, alpha: 1); grid.isHidden = true }
+        if theater.isHidden { theater.isHidden = false; applyTheaterLights() }
         if let m = theater.geometry?.firstMaterial { m.diffuse.contents = tex; m.diffuse.mipFilter = .linear; m.diffuse.maxAnisotropy = 16 }
+        // the spill follows the picture's average colour, smoothed so cuts don't strobe the room
+        spillColor += (screenAverage - spillColor) * (reduceMotion ? 1 : 0.12)
+        let k: Float = s.lights == "Dark" ? 1 : 0, c = spillColor * k   // only a dark room shows the spill
+        for (n, gain) in [(spill, Float(0.16)), (halo, Float(0.3))] {   // linear light added to the room, then sRGB for the material
+            n.isHidden = k == 0
+            let l = simd_min(c * gain, SIMD3(repeating: 1)), e = SIMD3(pow(l.x, 1 / 2.2), pow(l.y, 1 / 2.2), pow(l.z, 1 / 2.2))
+            n.geometry?.firstMaterial?.multiply.contents = NSColor(srgbRed: CGFloat(e.x), green: CGFloat(e.y), blue: CGFloat(e.z), alpha: 1)
+        }
+    }
+    /// White radial falloff (centre bright, transparent edge); `soft` = how far in from the edge the fade starts.
+    static func glow(soft: CGFloat) -> CGImage {
+        let c = overlayCanvas(256, 256)
+        let g = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB), colors: [CGColor(gray: 1, alpha: 1), CGColor(gray: 1, alpha: 1), CGColor(gray: 1, alpha: 0)] as CFArray,
+                           locations: [0, 1 - soft, 1])!
+        c.drawRadialGradient(g, startCenter: CGPoint(x: 128, y: 128), startRadius: 0, endCenter: CGPoint(x: 128, y: 128), endRadius: 128, options: [])
+        return c.makeImage()!
     }
     /// Pointer on the theater screen -> normalized point on the Mac display (0-1, top-left) + distance.
     func theaterHit(_ aim: VR4Pose) -> (uv: CGPoint, dist: Float)? {
@@ -919,7 +1277,7 @@ final class Compositor {
         for (i, h) in hs.enumerated() {
             let valid = h.flags & UInt32(VR4_HAND_POSE_VALID) != 0
             let n = hands[i]
-            n.grip.isHidden = !valid; n.aim.isHidden = !valid || (dash.isHidden && !lasersAlways)
+            n.grip.isHidden = !valid; n.aim.isHidden = !valid || (dash.isHidden && !lasersAlways && rays[i] == nil)   // menu closed: only onto a pinned window
             let hm = handModels.count > i ? handModels[i] : nil
             for c in n.grip.childNodes where c !== hm?.node { c.isHidden = joints[i] != nil }   // tracked hand: no controller
             if let j = joints[i], let hm {   // hand tracking: the grip node only carries the direct-touch push
@@ -941,10 +1299,34 @@ final class Compositor {
     private func setLaser(_ n: (grip: SCNNode, aim: SCNNode, laser: SCNNode, dot: SCNNode), _ h: VR4Hand, _ ray: Float?) {
         n.aim.simdPosition = SIMD3(h.aim.px, h.aim.py, h.aim.pz); n.aim.simdOrientation = simd_quatf(ix: h.aim.qx, iy: h.aim.qy, iz: h.aim.qz, r: h.aim.qw)
         if h.flags & UInt32(VR4_HAND_TRACKED) != 0 && ray == nil { n.aim.isHidden = true }   // hands: a laser only on the UI
-        let len = ray ?? 3
+        let len = ray ?? 3, tracked = h.flags & UInt32(VR4_HAND_TRACKED) != 0
         n.laser.scale = SCNVector3(1, CGFloat(len), 1)
+        n.laser.opacity = tracked ? 0.35 : 1   // hands: a faint ray, the cursor does the talking
         n.dot.isHidden = n.aim.isHidden || ray == nil
-        n.dot.simdPosition = n.aim.simdConvertPosition(SIMD3(0, 0, -len), to: nil)
+        n.dot.simdPosition = n.aim.simdConvertPosition(SIMD3(0, 0, -len + 0.002), to: nil)
+        n.dot.simdOrientation = n.aim.simdOrientation   // faces back along the ray
+        n.dot.simdScale = SIMD3(repeating: max(0.5, len) * 0.02)   // constant angular size (~1.1 deg)
+        // pinch progress (Meta-style hand cursor): the ring closes in as thumb and index approach and fills on the pinch.
+        // Controllers: the trigger's travel does the same.
+        let p = tracked ? min(1, h.trigger / 0.5) : min(1, h.trigger / 0.55), pressed = tracked ? h.trigger >= 1 : h.trigger > 0.55
+        n.dot.childNodes[0].simdScale = SIMD3(repeating: 1 - 0.35 * p)
+        n.dot.childNodes[1].simdScale = SIMD3(repeating: pressed ? 0.62 : 0.22 + 0.12 * p)
+        n.dot.childNodes[1].opacity = pressed ? 1 : 0.85
+    }
+    /// Pointer cursor: a white ring (with a dark rim for contrast on bright panels) around a dot; unit size, drawn on top.
+    static func cursor() -> SCNNode {
+        func disc(_ ring: Bool) -> SCNNode {
+            let c = overlayCanvas(128, 128), r = CGRect(x: 0, y: 0, width: 128, height: 128)
+            c.setStrokeColor(CGColor(gray: 0, alpha: 0.35)); c.setFillColor(CGColor(gray: 0, alpha: 0.35))
+            if ring { c.setLineWidth(22); c.strokeEllipse(in: r.insetBy(dx: 14, dy: 14)) } else { c.fillEllipse(in: r.insetBy(dx: 2, dy: 2)) }
+            c.setStrokeColor(CGColor(gray: 1, alpha: 1)); c.setFillColor(CGColor(gray: 1, alpha: 1))
+            if ring { c.setLineWidth(12); c.strokeEllipse(in: r.insetBy(dx: 14, dy: 14)) } else { c.fillEllipse(in: r.insetBy(dx: 8, dy: 8)) }
+            let g = SCNPlane(width: 1, height: 1), m = g.firstMaterial!
+            m.diffuse.contents = c.makeImage(); m.lightingModel = .constant; m.isDoubleSided = true
+            m.readsFromDepthBuffer = false; m.writesToDepthBuffer = false; m.blendMode = .alpha
+            let n = SCNNode(geometry: g); n.renderingOrder = 200; return n
+        }
+        let n = SCNNode(); n.addChildNode(disc(true)); n.addChildNode(disc(false)); return n
     }
     /// Hand-tracking joints per hand (render queue; nil = on a controller).
     var joints: [[VR4Pose]?] = [nil, nil]
@@ -1012,11 +1394,7 @@ final class Compositor {
         guard let cb = cq.makeCommandBuffer() else { return nil }
         let target = ssColor ?? color
         animate(); animateSpace(); animateTour()
-        if homeArchitecture.isHidden != homeOccluded {
-            SCNTransaction.begin(); SCNTransaction.animationDuration = 0
-            homeArchitecture.isHidden = homeOccluded
-            SCNTransaction.commit()
-        }
+        animateTransitions(head: (SIMD3(t.eye.0.pose.px, t.eye.0.pose.py, t.eye.0.pose.pz) + SIMD3(t.eye.1.pose.px, t.eye.1.pose.py, t.eye.1.pose.pz)) / 2)
         for (i, e) in [t.eye.0, t.eye.1].enumerated() {
             eyes[i].simdPosition = SIMD3(e.pose.px, e.pose.py, e.pose.pz)
             eyes[i].simdOrientation = simd_quatf(ix: e.pose.qx, iy: e.pose.qy, iz: e.pose.qz, r: e.pose.qw)
@@ -1039,6 +1417,70 @@ final class Compositor {
         }
         cb.commit(); cb.waitUntilCompleted()
         return pb
+    }
+
+    // MARK: frame overlays: head-locked system UI (performance HUD, toasts, recording light) stamped onto every outgoing
+    // frame, home and games alike. Each eye gets its own projection of the overlay's head-space anchor, so it floats at
+    // that depth in stereo; the headset's timewarp then keeps it steady.
+    typealias Overlay = (image: CGContext, at: SIMD3<Float>)
+    /// `eyes`/`fovs`: the poses the frame was rendered with. Images are premultiplied BGRA (`overlayCanvas`), blitted 1:1.
+    func stamp(_ pb: CVPixelBuffer, eyes: [VR4Pose], fovs: [VR4Fov], _ items: [Overlay]) {
+        guard !items.isEmpty, eyes.count == 2, fovs.count == 2 else { return }
+        CVPixelBufferLockBaseAddress(pb, []); defer { CVPixelBufferUnlockBaseAddress(pb, []) }
+        guard let base = CVPixelBufferGetBaseAddress(pb) else { return }
+        let H = CVPixelBufferGetHeight(pb), rb = CVPixelBufferGetBytesPerRow(pb), ew = CVPixelBufferGetWidth(pb) / 2
+        func q(_ p: VR4Pose) -> simd_quatf { simd_quatf(ix: p.qx, iy: p.qy, iz: p.qz, r: p.qw) }
+        func at(_ p: VR4Pose) -> SIMD3<Float> { SIMD3(p.px, p.py, p.pz) }
+        let centre = (at(eyes[0]) + at(eyes[1])) / 2
+        for (img, anchor) in items {
+            guard let src = img.data else { continue }
+            let world = centre + q(eyes[0]).act(anchor)
+            for e in 0..<2 {
+                let l = q(eyes[e]).inverse.act(world - at(eyes[e])), f = fovs[e]
+                guard l.z < -0.05 else { continue }
+                let u = (l.x / -l.z - tan(f.left)) / (tan(f.right) - tan(f.left)), v = (tan(f.up) - l.y / -l.z) / (tan(f.up) - tan(f.down))
+                guard u.isFinite, v.isFinite else { continue }
+                let x0 = e * ew + Int(u * Float(ew)) - img.width / 2, y0 = Int(v * Float(H)) - img.height / 2
+                let cx0 = max(x0, e * ew), cy0 = max(y0, 0), cx1 = min(x0 + img.width, (e + 1) * ew), cy1 = min(y0 + img.height, H)
+                guard cx1 > cx0, cy1 > cy0 else { continue }
+                var top = vImage_Buffer(data: src + (cy0 - y0) * img.bytesPerRow + (cx0 - x0) * 4, height: vImagePixelCount(cy1 - cy0), width: vImagePixelCount(cx1 - cx0), rowBytes: img.bytesPerRow)
+                var dst = vImage_Buffer(data: base + cy0 * rb + cx0 * 4, height: top.height, width: top.width, rowBytes: rb)
+                vImagePremultipliedAlphaBlend_BGRA8888(&top, &dst, &dst, vImage_Flags(kvImageNoFlags))
+            }
+        }
+    }
+    /// Premultiplied BGRA canvas for `stamp` (CoreGraphics y-up; memory rows top-down like the frame).
+    static func overlayCanvas(_ w: Int, _ h: Int) -> CGContext {
+        CGContext(data: nil, width: max(1, w), height: max(1, h), bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                  bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)!
+    }
+    /// A dark rounded panel with lines of text (and an optional image on the left), sized for `ppm` frame pixels per metre
+    /// at 1 m. Line = (text, colour, bold).
+    static func overlayPanel(_ lines: [(String, CGColor, Bool)], ppm: Float, textHeight: Float = 0.022, image: CGImage? = nil, dot: CGColor? = nil) -> CGContext {
+        let px = CGFloat(textHeight * ppm), pad = px * 0.8, lead = px * 1.35
+        let ct = lines.map { l -> CTLine in   // the shell's rounded system type
+            var font = NSFont.systemFont(ofSize: px, weight: l.2 ? .semibold : .medium)
+            if let d = font.fontDescriptor.withDesign(.rounded) { font = NSFont(descriptor: d, size: px) ?? font }
+            return CTLineCreateWithAttributedString(NSAttributedString(string: l.0, attributes: [.font: font, .foregroundColor: NSColor(cgColor: l.1) ?? .white]))
+        }
+        let textW = ct.map { CTLineGetTypographicBounds($0, nil, nil, nil) }.max() ?? 0, textH = lead * CGFloat(lines.count) - (lead - px)
+        let imgH = image == nil ? 0 : max(textH, px * 3), imgW = image.map { imgH * CGFloat($0.width) / CGFloat(max(1, $0.height)) } ?? 0
+        let dotW = dot == nil ? 0 : px * 1.3
+        let w = pad * 2 + dotW + (image == nil ? 0 : imgW + pad) + textW, h = pad * 2 + max(textH, imgH)
+        let c = overlayCanvas(Int(w.rounded(.up)), Int(h.rounded(.up)))
+        let r = CGRect(x: 0, y: 0, width: CGFloat(c.width), height: CGFloat(c.height))
+        c.addPath(CGPath(roundedRect: r, cornerWidth: min(r.height / 2, px * 1.2), cornerHeight: min(r.height / 2, px * 1.2), transform: nil))
+        c.setFillColor(CGColor(srgbRed: 0.07, green: 0.08, blue: 0.1, alpha: 0.86)); c.fillPath()
+        var x = pad
+        if let dot { c.setFillColor(dot); c.fillEllipse(in: CGRect(x: x, y: r.midY - px * 0.4, width: px * 0.8, height: px * 0.8)); x += dotW }
+        if let image {
+            let ir = CGRect(x: x, y: (r.height - imgH) / 2, width: imgW, height: imgH)
+            c.saveGState(); c.addPath(CGPath(roundedRect: ir, cornerWidth: px * 0.4, cornerHeight: px * 0.4, transform: nil)); c.clip(); c.draw(image, in: ir); c.restoreGState()
+            x += imgW + pad
+        }
+        var y = (r.height + textH) / 2 - px * 0.8   // first baseline
+        for l in ct { c.textPosition = CGPoint(x: x, y: y); CTLineDraw(l, c); y -= lead }
+        return c
     }
 
     private var gamePool: CVPixelBufferPool?, gamePoolSize = (0, 0)

@@ -10,6 +10,13 @@ final class Encoder {
     var forceIDR = true
     private var loggedError = false
     var onFrame: (_ annexB: Data, _ idr: Bool, _ timeNs: UInt64) -> Void = { _, _, _ in }
+    private let statLock = NSLock()
+    private var encodeNs: UInt64 = 0, encoded = 0
+    /// Average submit-to-output encode time (ms) since the last call; nil if nothing was encoded.
+    func takeEncodeMs() -> Double? {
+        statLock.lock(); defer { encodeNs = 0; encoded = 0; statLock.unlock() }
+        return encoded > 0 ? Double(encodeNs) / Double(encoded) / 1e6 : nil
+    }
 
     /// Returns false if VideoToolbox could not create the session (the caller falls back, e.g. HEVC -> H.264).
     @discardableResult func configure(width w: Int, height h: Int, fps: Int, mbps: Int, maxQP: Int, hevc useHEVC: Bool = false) -> Bool {
@@ -47,6 +54,13 @@ final class Encoder {
         return true
     }
 
+    /// Live bitrate change on the running session (no new session, no keyframe): Auto bitrate's adaptation.
+    func setBitrate(_ mbps: Int) {
+        guard let s = session else { return }
+        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AverageBitRate, value: mbps * 1_000_000 as CFTypeRef)
+        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_DataRateLimits, value: [mbps * 1_000_000 / 8 / 2, 0.25] as CFArray)
+    }
+
     func encode(_ pb: CVPixelBuffer, timeNs: UInt64) {
         guard let s = session else { return }
         CVBufferSetAttachment(pb, kCVImageBufferColorPrimariesKey, kCVImageBufferColorPrimaries_ITU_R_709_2, .shouldPropagate)
@@ -58,13 +72,15 @@ final class Encoder {
         // Real capture time: rate control budgets bits per second from PTS spacing. Counting frames as 1 ms apart told VT
         // it had 1000 fps, so slow games (BONELAB ~33 fps) got a tiny per-frame budget and frames were dropped.
         let hevc = self.hevc, gen = generation
-        let pts = CMTime(value: CMTimeValue(DispatchTime.now().uptimeNanoseconds / 1000), timescale: 1_000_000)
+        let t0 = DispatchTime.now().uptimeNanoseconds
+        let pts = CMTime(value: CMTimeValue(t0 / 1000), timescale: 1_000_000)
         VTCompressionSessionEncodeFrame(s, imageBuffer: pb, presentationTimeStamp: pts,
                                         duration: .invalid, frameProperties: opts, infoFlagsOut: nil) { [weak self] status, _, sb in
             guard status == noErr, let sb, let self, self.generation == gen else {
                 if status != noErr, self?.loggedError == false { self?.loggedError = true; NSLog("VR4Mac: encode failed %d", status) }
                 return
             }
+            self.statLock.lock(); self.encodeNs += DispatchTime.now().uptimeNanoseconds - t0; self.encoded += 1; self.statLock.unlock()
             let (data, idr) = Encoder.annexB(sb, hevc: hevc)
             self.onFrame(data, idr, timeNs)
         }

@@ -8,6 +8,8 @@ final class Link {
     var onTracking: (VR4Tracking, [[VR4Pose]?]) -> Void = { _, _ in }
     var onRequestIDR: () -> Void = {}
     var onMic: (Data) -> Void = { _ in }
+    /// VR4_STATUS: headset battery and its decoder stats (JSON, about once a second).
+    var onStatus: ([String: Any]) -> Void = { _ in }
     var onDisconnect: () -> Void = {}
     var onIssue: (String) -> Void = { _ in }
     private(set) var connected = false
@@ -126,6 +128,7 @@ final class Link {
             onTracking(b.withUnsafeBytes { $0.loadUnaligned(as: VR4Tracking.self) }, joints)
         case VR4_REQUEST_IDR: onRequestIDR()
         case VR4_MIC: onMic(b)
+        case VR4_STATUS: if let j = try? JSONSerialization.jsonObject(with: b) as? [String: Any] { onStatus(j) }
         default: break
         }
     }

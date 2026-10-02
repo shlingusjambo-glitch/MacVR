@@ -46,6 +46,8 @@ final class UISounds {
         bank["env"] = sweep(from: 220, to: 660, dur: 0.35)                                                   // environment change
         bank["notify"] = tone([(1319, 0.0, 0.08), (1760, 0.08, 0.12)], dur: 0.22, gain: 0.5)
         bank["close"] = bank["menuClose"]
+        bank["dismiss"] = sweep(from: 700, to: 350, dur: 0.09)                                              // notification cleared
+        bank["lock"] = tone([(988, 0.0, 0.03), (1319, 0.03, 0.03), (1319, 0.07, 0.03)], dur: 0.11, gain: 0.5)   // caps lock
         // Real AOSP UI sounds (Apache-2.0) replace the synth tones; the tones above are the fallback.
         for name in bank.keys + ["close", "keyspace", "keydel", "keyret"] {
             if let u = Bundle.main.url(forResource: name, withExtension: "wav", subdirectory: "sounds"), let d = try? Data(contentsOf: u), d.count > 44 {

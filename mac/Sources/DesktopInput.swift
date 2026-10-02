@@ -16,11 +16,15 @@ final class DesktopInput {
     }
 
     func move(toNormalized p: CGPoint) {
+        let bounds = CGDisplayBounds(CGMainDisplayID())
+        guard p.x.isFinite, p.y.isFinite else { return }
+        move(to: CGPoint(x: bounds.minX + min(1, max(0, p.x)) * max(0, bounds.width - 1), y: bounds.minY + min(1, max(0, p.y)) * max(0, bounds.height - 1)))
+    }
+    /// Global display point (any display, top-left origin), e.g. inside a Mac window shown in VR.
+    func move(to p: CGPoint) {
         lock.lock(); defer { lock.unlock() }
         guard trusted, p.x.isFinite, p.y.isFinite else { return }
-        let bounds = CGDisplayBounds(CGMainDisplayID())
-        position = CGPoint(x: bounds.minX + min(1, max(0, p.x)) * max(0, bounds.width - 1),
-                           y: bounds.minY + min(1, max(0, p.y)) * max(0, bounds.height - 1))
+        position = p
         let right = held.contains(true)
         let kind: CGEventType = right ? .rightMouseDragged : (held.contains(false) ? .leftMouseDragged : .mouseMoved)
         CGEvent(mouseEventSource: source, mouseType: kind, mouseCursorPosition: position,

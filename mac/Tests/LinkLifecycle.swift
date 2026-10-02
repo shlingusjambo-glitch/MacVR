@@ -19,12 +19,15 @@ import Darwin
             }
         }
         precondition(result == 0, "connect failed")
-        let body = Data("{\"device\":\"Lifecycle test\"}".utf8)
-        var packet = Data([UInt8(VR4_HELLO)])
+        send(fd, VR4_HELLO, "{\"device\":\"Lifecycle test\"}")
+        return fd
+    }
+    static func send(_ fd: Int32, _ type: Int, _ json: String) {
+        let body = Data(json.utf8)
+        var packet = Data([UInt8(type)])
         withUnsafeBytes(of: UInt32(body.count).littleEndian) { packet.append(contentsOf: $0) }
         packet.append(body)
         packet.withUnsafeBytes { precondition(Darwin.write(fd, $0.baseAddress, $0.count) == $0.count) }
-        return fd
     }
     static func main() {
         let port: UInt16 = 19985
@@ -37,6 +40,11 @@ import Darwin
         link.start(discovery: false)
         wait(ready, "listener ready")
         let first = client(port); wait(hello, "first HELLO")
+        let status = DispatchSemaphore(value: 0)
+        link.onStatus = { if $0["battery"] as? Int == 83, $0["charging"] as? Bool == true { status.signal() } }
+        send(first, 42, "{}")   // unknown packet types are skipped, the link stays up
+        send(first, VR4_STATUS, "{\"battery\":83,\"charging\":true,\"latency_ms\":31.5}")
+        wait(status, "STATUS parsed")
         for _ in 0..<160 { link.send(Int32(VR4_VIDEO), Data(count: 65536)) }
         precondition(link.backlog > 0, "Must exercise pending sends")
         let second = client(port); wait(disconnected, "replacement cleanup"); wait(hello, "replacement HELLO")
@@ -49,6 +57,6 @@ import Darwin
         other.onIssue = { if !$0.isEmpty { conflict.signal() } }
         other.start(discovery: false)
         wait(conflict, "port conflict surfaced")
-        print("PASS: pending-send replacement, HELLO reconnect, EOF cleanup, listener failure")
+        print("PASS: pending-send replacement, HELLO reconnect, STATUS, EOF cleanup, listener failure")
     }
 }
