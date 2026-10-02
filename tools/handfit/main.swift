@@ -17,6 +17,7 @@ if let e = ProcessInfo.processInfo.environment["EYE"] { eyeRender(Int(e)!, "eye\
 if ProcessInfo.processInfo.environment["SCORE"] != nil { scoreOnly = true; for m in [HeadsetModel.quest1, .quest2, .quest3] { fit(m) }; exit(0) }
 if let f = ProcessInfo.processInfo.environment["FIT"] { for m in [HeadsetModel.quest1, .quest2, .quest3] where f == "1" || f == "\(m)" { fit(m) }; exit(0) }
 if ProcessInfo.processInfo.environment["PERF"] != nil { perf(); exit(0) }
+if ProcessInfo.processInfo.environment["SDF"] != nil { sdfCheck(); exit(0) }
 if ProcessInfo.processInfo.environment["PROBE"] != nil { probe(); exit(0) }
 var idle = VR4Hand(); idle.buttons = UInt32(VR4_BTN_TRIGGER_TOUCH | VR4_BTN_THUMB_TOUCH)
 var point = VR4Hand(); point.buttons = 0

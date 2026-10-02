@@ -170,56 +170,47 @@ final class HandModel {
     }
     private func posed(_ m: [simd_float4x4], _ p: SIMD3<Float>, _ bone: Int) -> SIMD3<Float> { let r = m[bone] * SIMD4(p, 1); return SIMD3(r.x, r.y, r.z) }
     private func hinge(_ bi: Int, _ angle: Float) {
-        bones[bi].q = simd_quatf(angle: simd_clamp(angle, bones[bi].limit.lowerBound, bones[bi].limit.upperBound), axis: bones[bi].axis)
+        let q = simd_quatf(angle: simd_clamp(angle, bones[bi].limit.lowerBound, bones[bi].limit.upperBound), axis: bones[bi].axis)
+        // lower fingers' knuckles also fan sideways (about the palm normal) so they can wrap a handle crossing the palm
+        let f = (bi - 1) / 3
+        bones[bi].q = bi >= 1 && bi <= 7 && (bi - 1) % 3 == 0 ? simd_quatf(angle: spread[f], axis: SIMD3(left ? -1 : 1, 0, 0)) * q : q
     }
+    private var spread: [Float] = [0, 0, 0]
     /// Curl a finger (0 open .. 1 fist) about its knuckle hinges.
     private func curl(_ finger: Int, _ c: Float) {
         for k in 0..<3 { hinge(1 + finger * 3 + k, c * [1.3, 1.6, 1.1][k]) }
     }
     /// Close pinky/ring/middle around the controller's handle.
     private func fitGrasp(_ controller: SCNNode) {
-        var cloud: [SIMD3<Float>] = []
-        controller.enumerateHierarchy { n, _ in
-            guard let g = n.geometry, let s = g.sources(for: .vertex).first, s.bytesPerComponent == 4 else { return }
-            s.data.withUnsafeBytes { raw in
-                for i in stride(from: 0, to: s.vectorCount, by: 2) {
-                    let o = s.dataOffset + i * s.dataStride
-                    cloud.append(n.simdConvertPosition(SIMD3(raw.loadUnaligned(fromByteOffset: o, as: Float.self), raw.loadUnaligned(fromByteOffset: o + 4, as: Float.self),
-                                                             raw.loadUnaligned(fromByteOffset: o + 8, as: Float.self)), to: controller))
-                }
-            }
-        }
-        // the handle as an elliptic cylinder along grip z (measured from the mesh); the ring and trigger are in front
-        let hs = cloud.filter { $0.z > 0.01 && $0.z < 0.055 }
-        guard let x0 = hs.map(\.x).min(), let x1 = hs.map(\.x).max(), let y0 = hs.map(\.y).min(), let y1 = hs.map(\.y).max() else { return }
-        let c = SIMD2((x0 + x1) / 2, (y0 + y1) / 2), r = SIMD2((x1 - x0) / 2, (y1 - y0) / 2), zEnd = cloud.map(\.z).max()!
-        let toGrip = node.simdTransform
-        /// Signed distance (approx.) from the handle surface, positive outside.
-        func outside(_ p: SIMD3<Float>) -> Float {
-            let g = toGrip * SIMD4(p, 1)
-            guard g.z > -0.005 else { return 1 }   // in front of the handle: the trigger housing and ring
-            let side = (simd_length((SIMD2(g.x, g.y) - c) / r) - 1) * min(r.x, r.y)
-            return max(side, g.z - zEnd)   // capped at the bottom, so the pinky closes under it
-        }
-        for f in 0..<3 {   // knuckle angles that wrap the finger (~8 mm thick) around the handle, pad resting on it
+        let sdf = ControllerSurface(controller), toGrip = node.simdTransform
+        guard !sdf.empty else { return }
+        func outside(_ p: SIMD3<Float>) -> Float { let g = toGrip * SIMD4(p, 1); return sdf.distance(SIMD3(g.x, g.y, g.z)) }
+        // Each lower finger closes around the real controller surface: the knuckle angles that keep every phalanx
+        // (~6.5 mm radius) out of the shell, rest the middle and tip pads on it, and otherwise curl as far as they can
+        // (a hand holding something wraps until it touches).
+        for f in 0..<3 {
             let bi = 1 + f * 3, j = joints[f]
-            var best: (cost: Float, a: [Float]) = (.infinity, [0.8, 1.2, 0.8])
-            for a1 in stride(from: Float(0), through: 1.4, by: 0.07) {
-                for a2 in stride(from: Float(0.2), through: 1.8, by: 0.07) { for k3: Float in [0.45, 0.7, 0.95] {
+            var best: (cost: Float, a: [Float], sp: Float) = (.infinity, [0.9, 1.3, 0.9], 0)
+            for sp in stride(from: Float(-0.45), through: 0.45, by: 0.15) { spread[f] = sp
+            for a1 in stride(from: Float(0), through: 1.5, by: 0.1) {
+                for a2 in stride(from: Float(0.2), through: 1.8, by: 0.1) { for k3: Float in [0.5, 0.75, 1.0] {
                     let a = [a1, a2, min(1.3, a2 * k3)]
                     for k in 0..<3 { hinge(bi + k, a[k]) }
                     let m = worldMatrices()
-                    var cost: Float = 0
+                    var cost: Float = 0, touch: Float = 0
                     for k in 0..<3 {
                         let s = posed(m, j[k], k == 0 ? 0 : bi + k - 1), e = posed(m, j[k + 1], bi + k)
-                        for t in stride(from: Float(0.25), through: 1, by: 0.25) { cost += max(0, 0.0065 - outside(s + (e - s) * t)) }
-                        if k > 0 { cost += 0.15 * abs(outside((s + e) / 2) - 0.0065) }   // middle and tip segments rest on it
-                        if k == 2 { cost += 0.15 * abs(outside(e) - 0.0065) }                // pad on the surface, not poking out
+                        for t in stride(from: Float(0.25), through: 1, by: 0.25) { cost += 4 * max(0, 0.0065 - outside(s + (e - s) * t)) }
+                        if k > 0 { touch += abs(outside((s + e) / 2) - 0.0065) }
+                        if k == 2 { touch += abs(outside(e) - 0.0065) }
                     }
-                    if cost < best.cost { best = (cost, a) }
+                    cost += 0.2 * min(touch, 0.06) - 0.004 * (a[0] + a[1] + a[2]) + 0.01 * abs(sp)   // touching, else keep curling; little fanning
+                    if cost < best.cost { best = (cost, a, sp) }
                 } }
-            }
+            } }
+            spread[f] = best.sp
             grasp[f] = best.a
+            if ProcessInfo.processInfo.environment["HAND_DEBUG"] != nil { print("grasp", f, best) }
             for k in 0..<3 { hinge(bi + k, 0) }
         }
     }
@@ -318,6 +309,70 @@ final class HandModel {
         g.materials = [material]
         g.subdivisionLevel = HandModel.smooth   // rounds the low-poly fingertips and palm creases
         node.geometry = g
+    }
+}
+
+/// Signed distance to a controller's surface (positive outside): distance to the nearest mesh vertex (5 mm hash grid),
+/// negative where the point is inside the solid (a 2.5 mm voxel fill: rays along z, filled between crossing pairs).
+struct ControllerSurface {
+    private var cells: [SIMD3<Int32>: [SIMD3<Float>]] = [:]
+    private var solid = Set<SIMD3<Int32>>()
+    var empty: Bool { cells.isEmpty }
+    private static let cell: Float = 0.005, vox: Float = 0.0025
+    private static func key(_ p: SIMD3<Float>, _ s: Float = cell) -> SIMD3<Int32> { SIMD3<Int32>((p / s).rounded(.down)) }
+    init(_ controller: SCNNode) {
+        var tris: [(SIMD3<Float>, SIMD3<Float>, SIMD3<Float>)] = []
+        controller.enumerateHierarchy { n, _ in
+            guard let g = n.geometry, let vs = g.sources(for: .vertex).first, vs.bytesPerComponent == 4 else { return }
+            let pts: [SIMD3<Float>] = vs.data.withUnsafeBytes { raw in (0..<vs.vectorCount).map { i in let o = vs.dataOffset + i * vs.dataStride
+                return n.simdConvertPosition(SIMD3(raw.loadUnaligned(fromByteOffset: o, as: Float.self), raw.loadUnaligned(fromByteOffset: o + 4, as: Float.self),
+                                                   raw.loadUnaligned(fromByteOffset: o + 8, as: Float.self)), to: controller) } }
+            for p in pts { cells[ControllerSurface.key(p), default: []].append(p) }
+            for el in g.elements where el.primitiveType == .triangles {
+                el.data.withUnsafeBytes { raw in
+                    func ix(_ i: Int) -> Int { el.bytesPerIndex == 4 ? Int(raw.loadUnaligned(fromByteOffset: i * 4, as: UInt32.self))
+                        : el.bytesPerIndex == 2 ? Int(raw.loadUnaligned(fromByteOffset: i * 2, as: UInt16.self)) : Int(raw.load(fromByteOffset: i, as: UInt8.self)) }
+                    for t in 0..<el.primitiveCount {
+                        let a = ix(t * 3), b = ix(t * 3 + 1), c = ix(t * 3 + 2)
+                        if a < pts.count, b < pts.count, c < pts.count { tris.append((pts[a], pts[b], pts[c])) }
+                    }
+                }
+            }
+        }
+        // bucket triangles by xy voxel column, then fill each column between pairs of crossings along z
+        let v = ControllerSurface.vox
+        var cols: [SIMD2<Int32>: [Int]] = [:]
+        for (i, t) in tris.enumerated() {
+            let lo = simd_min(t.0, simd_min(t.1, t.2)), hi = simd_max(t.0, simd_max(t.1, t.2))
+            for x in Int32((lo.x / v).rounded(.down))...Int32((hi.x / v).rounded(.down)) {
+                for y in Int32((lo.y / v).rounded(.down))...Int32((hi.y / v).rounded(.down)) { cols[SIMD2(x, y), default: []].append(i) }
+            }
+        }
+        for (k, list) in cols {
+            let px = (Float(k.x) + 0.5) * v, py = (Float(k.y) + 0.5) * v
+            var zs: [Float] = []
+            for i in list {   // where the vertical line through (px, py) crosses the triangle (barycentric in xy)
+                let (a, b, c) = tris[i]
+                let d = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y)
+                guard abs(d) > 1e-12 else { continue }
+                let l1 = ((b.y - c.y) * (px - c.x) + (c.x - b.x) * (py - c.y)) / d, l2 = ((c.y - a.y) * (px - c.x) + (a.x - c.x) * (py - c.y)) / d, l3 = 1 - l1 - l2
+                if l1 >= 0, l2 >= 0, l3 >= 0 { zs.append(l1 * a.z + l2 * b.z + l3 * c.z) }
+            }
+            zs.sort()
+            for j in stride(from: 0, to: zs.count - 1, by: 2) {
+                for z in Int32((zs[j] / v).rounded(.down))...Int32((zs[j + 1] / v).rounded(.down)) { solid.insert(SIMD3(k.x, k.y, z)) }
+            }
+        }
+    }
+    func distance(_ p: SIMD3<Float>) -> Float {
+        let k = ControllerSurface.key(p)
+        var best = Float.infinity
+        for dx in -2...2 { for dy in -2...2 { for dz in -2...2 {
+            guard let list = cells[k &+ SIMD3(Int32(dx), Int32(dy), Int32(dz))] else { continue }
+            for q in list { best = min(best, simd_distance_squared(p, q)) }
+        } } }
+        let d = best == .infinity ? 1 : best.squareRoot()
+        return solid.contains(ControllerSurface.key(p, ControllerSurface.vox)) ? -d : d
     }
 }
 

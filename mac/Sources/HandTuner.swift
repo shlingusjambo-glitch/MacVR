@@ -74,12 +74,36 @@ final class HandTuner {
         case ("GET", "/state"): json(c, state())
         case ("POST", "/place"):
             guard let o = try? JSONSerialization.jsonObject(with: r.body) as? [String: Any], let n = o["model"] as? String,
-                  let m = HandTuner.names.first(where: { $0.0 == n })?.1, let v = (o["v"] as? [NSNumber])?.map(\.floatValue), v.count == 6 else {
-                send(c, "400 Bad Request", "text/plain", Data()); return }
-            let d = Float.pi / 180
-            HandModel.place[m] = (SIMD3(v[0], v[1], v[2]) / 1000,
-                                  simd_quatf(angle: v[3] * d, axis: SIMD3(1, 0, 0)) * simd_quatf(angle: v[4] * d, axis: SIMD3(0, 1, 0)) * simd_quatf(angle: v[5] * d, axis: SIMD3(0, 0, 1)))
+                  let m = HandTuner.names.first(where: { $0.0 == n })?.1 else { send(c, "400 Bad Request", "text/plain", Data()); return }
+            if let p = (o["pos"] as? [NSNumber])?.map(\.floatValue), let q = (o["rot"] as? [NSNumber])?.map(\.floatValue), p.count == 3, q.count == 4 {
+                HandModel.place[m] = (SIMD3(p[0], p[1], p[2]), simd_normalize(simd_quatf(vector: SIMD4(q[0], q[1], q[2], q[3]))))   // metres + quaternion (3D page)
+            } else if let v = (o["v"] as? [NSNumber])?.map(\.floatValue), v.count == 6 {
+                let d = Float.pi / 180
+                HandModel.place[m] = (SIMD3(v[0], v[1], v[2]) / 1000,
+                                      simd_quatf(angle: v[3] * d, axis: SIMD3(1, 0, 0)) * simd_quatf(angle: v[4] * d, axis: SIMD3(0, 1, 0)) * simd_quatf(angle: v[5] * d, axis: SIMD3(0, 0, 1)))
+            } else { send(c, "400 Bad Request", "text/plain", Data()); return }
             rebuild(); json(c, ["ok": true])
+        case ("GET", "/controller.glb"):   // the left controller mesh the hand holds (grip space)
+            let n = r.query["model"] ?? "quest1", m = HandTuner.names.first { $0.0 == n }?.1 ?? .quest1
+            let profile = ["oculus-touch-v2", "oculus-touch-v3", "meta-quest-touch-plus"][m.controllerMesh.rawValue]
+            if let u = Bundle.main.resourceURL?.appendingPathComponent("controllers/\(profile)/left.glb"), let d = try? Data(contentsOf: u) {
+                send(c, "200 OK", "model/gltf-binary", d) } else { send(c, "404 Not Found", "text/plain", Data()) }
+        case ("GET", "/mesh"):   // the posed left hand in its own (mesh) space + its placement, for the 3D page
+            let n = r.query["model"] ?? "quest1", m = HandTuner.names.first { $0.0 == n }?.1 ?? .quest1
+            let out = DispatchQueue.main.sync { () -> [String: Any]? in
+                let ctl = ControllerModels.build(m, hand: 0), rig = ControllerRig(ctl, hand: 0)
+                guard let hm = HandModel(hand: 0, model: m, controller: ctl), let pl = HandModel.place[m] else { return nil }
+                let input = Compositor.demoInput(pose == "live" ? "idle" : pose, hand: 0)
+                rig.update(input); hm.update(input, targets: rig.targets(), poke: pose == "poke")
+                guard let g = hm.node.geometry, let vs = g.sources(for: .vertex).first, let el = g.elements.first else { return nil }
+                let verts: [Float] = vs.data.withUnsafeBytes { raw in (0..<vs.vectorCount * 3).map { i in
+                    raw.loadUnaligned(fromByteOffset: vs.dataOffset + (i / 3) * vs.dataStride + (i % 3) * vs.bytesPerComponent, as: Float.self) } }
+                let idx: [Int] = el.data.withUnsafeBytes { raw in (0..<el.primitiveCount * 3).map { i in
+                    el.bytesPerIndex == 4 ? Int(raw.loadUnaligned(fromByteOffset: i * 4, as: UInt32.self)) : Int(raw.loadUnaligned(fromByteOffset: i * 2, as: UInt16.self)) } }
+                let q = pl.rot.vector
+                return ["pos": [pl.pos.x, pl.pos.y, pl.pos.z], "rot": [q.x, q.y, q.z, q.w], "verts": verts, "idx": idx]
+            }
+            if let out { json(c, out) } else { send(c, "500 Internal Server Error", "text/plain", Data()) }
         case ("POST", "/pose"):
             pose = r.query["name"] ?? "live"
             setPose(pose == "live" ? nil : pose); json(c, ["ok": true])
@@ -113,56 +137,99 @@ final class HandTuner {
 <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Hand Tuner</title>
 <style>
-:root{--bg:#1c272e;--panel:#243039;--line:#34404a;--text:#e0e5e8;--dim:#a4adb4;--blue:#2a73f5}
-@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){--bg:#eef1f3;--panel:#fff;--line:#d5dbe0;--text:#1c272e;--dim:#5d6a75}}
-body{margin:0;background:var(--bg);color:var(--text);font:15px -apple-system,system-ui,sans-serif}
-main{max-width:1180px;margin:0 auto;padding:20px 16px;display:grid;grid-template-columns:360px 1fr;gap:20px}
-@media (max-width:820px){main{grid-template-columns:1fr}}
-h1{font-size:20px;margin:0 0 4px} p{color:var(--dim);margin:0 0 14px;line-height:1.4}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:16px}
-label{display:grid;grid-template-columns:90px 1fr 64px;align-items:center;gap:10px;margin:8px 0;color:var(--dim)}
-input[type=range]{width:100%} input[type=number]{width:64px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:3px}
-.row{display:flex;flex-wrap:wrap;gap:8px}
-button{background:var(--line);color:var(--text);border:0;border-radius:999px;padding:8px 14px;font:inherit;cursor:pointer}
+:root{--bg:#1c272e;--panel:#243039ee;--line:#34404a;--text:#e0e5e8;--dim:#a4adb4;--blue:#2a73f5}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){--bg:#dfe5e9;--panel:#ffffffee;--line:#d5dbe0;--text:#1c272e;--dim:#5d6a75}}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font:14px -apple-system,system-ui,sans-serif;overflow:hidden}
+#view{position:fixed;inset:0}
+aside{position:fixed;top:12px;left:12px;width:300px;max-height:calc(100% - 24px);overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px;box-sizing:border-box}
+@media (max-width:640px){aside{left:8px;right:8px;width:auto;top:auto;bottom:8px;max-height:45%}}
+h1{font-size:16px;margin:0 0 4px} p{color:var(--dim);margin:0 0 10px;line-height:1.35;font-size:13px}
+h2{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);margin:14px 0 6px;font-weight:600}
+.row{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+button{background:var(--line);color:var(--text);border:0;border-radius:999px;padding:6px 11px;font:inherit;cursor:pointer}
 button.on,button.primary{background:var(--blue);color:#fff}
-.views{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
-.views figure{margin:0;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
-.views img{width:100%;display:block;aspect-ratio:1;background:#0003} figcaption{font-size:12px;color:var(--dim);padding:6px 10px}
-#msg{color:var(--dim);font-size:13px;min-height:18px;margin-top:8px}
-</style></head><body><main>
-<section>
-<h1>Hand Tuner</h1><p>Move the hand on the controller. It updates live in the headset and in the previews. Play a pose to check the fingers, then save.</p>
-<div class="card"><div class="row" id="models"></div></div>
-<div class="card" id="sliders"></div>
-<div class="card"><div class="row" id="poses"></div></div>
-<div class="card"><div class="row"><button class="primary" id="save">Save placement</button><button id="reset">Forget saved</button></div><div id="msg"></div></div>
-</section>
-<section><div class="row" style="margin-bottom:10px"><button id="lr" data-hand="left">Left hand</button></div><div class="views" id="views"></div></section>
-</main><script>
-const axes=[["Left / right","mm",-80,80],["Up / down","mm",-80,80],["Back / front","mm",-80,80],["Tilt","°",-180,180],["Turn","°",-180,180],["Roll","°",-180,180]];
-const poses=[["live","Live input"],["idle","Idle"],["index_touch","Finger on trigger"],["trigger_pull","Pull trigger"],["thumbrest","Thumb rest"],["stick","Thumb on stick"],["stick_circle","Move stick"],["face_low","X / A"],["face_high","Y / B"],["grip","Squeeze grip"],["poke","Point"],["cycle","Play all"]];
-const views=["first","outside","inside","front","top","bottom"];
-let st=null,model="quest1",hand="left",timer=null,tick=0;
+input[type=number]{width:56px;background:transparent;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:3px 5px;font:inherit}
+#msg{color:var(--dim);font-size:12px;margin-top:8px;min-height:16px}
+kbd{border:1px solid var(--line);border-radius:4px;padding:0 4px;font-size:11px}
+</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
+</head><body><div id="view"></div>
+<aside>
+<h1>Hand Tuner</h1>
+<p>Drag the arrows to move the left hand, the rings to turn it. The right hand mirrors it. Fingers re-wrap after each change, live in the headset too. Orbit: drag. Pan: right-drag. Zoom: scroll.</p>
+<h2>Controller</h2><div class="row" id="models"></div>
+<h2>View</h2><div class="row" id="views"></div>
+<h2>Gizmo</h2>
+<div class="row"><button id="mT" class="on">Move <kbd>W</kbd></button><button id="mR">Rotate <kbd>E</kbd></button></div>
+<div class="row" style="margin-top:6px"><button id="sm" class="on">Smooth</button><button id="sn">Snap</button>
+<label>Step <input id="stepT" type="number" value="1" min="0.1" step="0.5"> mm</label><label><input id="stepR" type="number" value="5" min="1" step="1"> °</label></div>
+<h2>Play a pose</h2><div class="row" id="poses"></div>
+<h2>Placement</h2><div class="row"><button class="primary" id="save">Save</button><button id="reset">Forget saved</button></div>
+<div id="msg"></div>
+</aside>
+<script type="module">
+import * as THREE from "three";
+import {OrbitControls} from "three/addons/controls/OrbitControls.js";
+import {TransformControls} from "three/addons/controls/TransformControls.js";
+import {GLTFLoader} from "three/addons/loaders/GLTFLoader.js";
 const $=s=>document.querySelector(s);
-async function load(){st=await (await fetch("/state")).json();model=st.current;draw()}
-function draw(){
- $("#models").innerHTML=["quest1","quest2","quest3"].map(m=>`<button class="${m==model?"on":""}" data-m="${m}">${{quest1:"Quest 1",quest2:"Quest 2",quest3:"Quest 3 / Frame"}[m]}</button>`).join("");
- document.querySelectorAll("[data-m]").forEach(b=>b.onclick=()=>{model=b.dataset.m;draw();refresh()});
- const v=st.placements[model];
- $("#sliders").innerHTML=axes.map((a,i)=>`<label>${a[0]}<input type="range" min="${a[2]}" max="${a[3]}" step="${a[1]=="mm"?0.5:1}" value="${v[i].toFixed(1)}" data-i="${i}"><input type="number" step="${a[1]=="mm"?0.5:1}" value="${v[i].toFixed(1)}" data-n="${i}"></label>`).join("");
- document.querySelectorAll("[data-i]").forEach(r=>r.oninput=()=>set(+r.dataset.i,+r.value));
- document.querySelectorAll("[data-n]").forEach(r=>r.onchange=()=>set(+r.dataset.n,+r.value));
- $("#poses").innerHTML=poses.map(p=>`<button class="${p[0]==st.pose?"on":""}" data-p="${p[0]}">${p[1]}</button>`).join("");
- document.querySelectorAll("[data-p]").forEach(b=>b.onclick=async()=>{await fetch("/pose?name="+b.dataset.p,{method:"POST"});st.pose=b.dataset.p;draw();refresh()});
- refresh();
+const poses=[["live","Live"],["idle","Idle"],["index_touch","On trigger"],["trigger_pull","Pull trigger"],["thumbrest","Thumb rest"],["stick","On stick"],["stick_circle","Move stick"],["face_low","X / A"],["face_high","Y / B"],["grip","Squeeze"],["poke","Point"],["cycle","Play all"]];
+const animated=new Set(["trigger_pull","stick_circle","grip","cycle"]);
+let model="quest1",pose="live",snap=false;
+const view=$("#view"),renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
+renderer.setPixelRatio(devicePixelRatio);view.appendChild(renderer.domElement);
+const scene=new THREE.Scene(),camera=new THREE.PerspectiveCamera(35,1,0.005,10);
+camera.position.set(-0.28,0.16,0.24);
+scene.add(new THREE.HemisphereLight(0xffffff,0x445566,2.2));const key=new THREE.DirectionalLight(0xffffff,2);key.position.set(-1,2,1);scene.add(key);
+const grid=new THREE.GridHelper(0.4,40,0x667788,0x334455);grid.position.y=-0.12;scene.add(grid);
+const orbit=new OrbitControls(camera,renderer.domElement);orbit.target.set(0,0,0.01);orbit.enableDamping=true;
+const ctlL=new THREE.Group(),ctlR=new THREE.Group();scene.add(ctlL,ctlR);ctlR.scale.x=-1;ctlR.position.x=0.16;ctlL.position.x=0;
+const handL=new THREE.Group(),handR=new THREE.Group();ctlL.add(handL);ctlR.add(handR);
+const handMat=new THREE.MeshStandardMaterial({color:0x8d98a3,roughness:0.7,transparent:true,opacity:0.8,side:THREE.DoubleSide});
+const handMesh=new THREE.Mesh(new THREE.BufferGeometry(),handMat),handMeshR=new THREE.Mesh(handMesh.geometry,handMat);
+handL.add(handMesh);handR.add(handMeshR);
+const gizmo=new TransformControls(camera,renderer.domElement);gizmo.setSize(0.8);gizmo.attach(handL);scene.add(gizmo);
+gizmo.addEventListener("dragging-changed",e=>{orbit.enabled=!e.value;if(!e.value)push(true)});
+gizmo.addEventListener("objectChange",()=>{handR.position.copy(handL.position);handR.quaternion.copy(handL.quaternion);push(false)});
+const loader=new GLTFLoader();
+function loadController(){[ctlL,ctlR].forEach(g=>g.children.filter(c=>c.userData.ctl).forEach(c=>g.remove(c)));
+ loader.load(`/controller.glb?model=${model}`,gl=>{[ctlL,ctlR].forEach((g,i)=>{const o=i?gl.scene.clone():gl.scene;o.userData.ctl=true;g.add(o)})})}
+let inflight=false,pending=false,last=0;
+async function loadMesh(applyPlacement){
+ const m=await (await fetch(`/mesh?model=${model}`)).json();
+ const g=new THREE.BufferGeometry();g.setAttribute("position",new THREE.Float32BufferAttribute(m.verts,3));g.setIndex(m.idx);g.computeVertexNormals();
+ handMesh.geometry.dispose();handMesh.geometry=g;handMeshR.geometry=g;
+ if(applyPlacement){handL.position.fromArray(m.pos);handL.quaternion.set(m.rot[0],m.rot[1],m.rot[2],m.rot[3]);handR.position.copy(handL.position);handR.quaternion.copy(handL.quaternion)}
 }
-function set(i,x){st.placements[model][i]=x;document.querySelector(`[data-i="${i}"]`).value=x;document.querySelector(`[data-n="${i}"]`).value=x;
- clearTimeout(timer);timer=setTimeout(async()=>{await fetch("/place",{method:"POST",body:JSON.stringify({model,v:st.placements[model]})});refresh()},60)}
-function refresh(){tick++;$("#views").innerHTML=views.map(v=>`<figure><img src="/preview?model=${model}&hand=${hand}&view=${v}&t=${tick}" alt="${v} view"><figcaption>${v}</figcaption></figure>`).join("")}
-$("#lr").onclick=()=>{hand=hand=="left"?"right":"left";$("#lr").textContent=hand=="left"?"Left hand":"Right hand";refresh()};
+async function push(final){
+ if(inflight){pending=true;return}
+ const now=performance.now();if(!final&&now-last<90){pending=true;setTimeout(()=>{if(pending){pending=false;push(false)}},90);return}
+ inflight=true;last=now;
+ const q=handL.quaternion;
+ await fetch("/place",{method:"POST",body:JSON.stringify({model,pos:handL.position.toArray(),rot:[q.x,q.y,q.z,q.w]})});
+ await loadMesh(false);inflight=false;
+ if(pending){pending=false;push(final)}
+}
+function setSnap(on){snap=on;$("#sn").classList.toggle("on",on);$("#sm").classList.toggle("on",!on);
+ gizmo.setTranslationSnap(on?(+$("#stepT").value||1)/1000:null);gizmo.setRotationSnap(on?THREE.MathUtils.degToRad(+$("#stepR").value||5):null)}
+$("#sm").onclick=()=>setSnap(false);$("#sn").onclick=()=>setSnap(true);$("#stepT").onchange=$("#stepR").onchange=()=>setSnap(snap);
+function setMode(m){gizmo.setMode(m);$("#mT").classList.toggle("on",m=="translate");$("#mR").classList.toggle("on",m=="rotate")}
+$("#mT").onclick=()=>setMode("translate");$("#mR").onclick=()=>setMode("rotate");
+addEventListener("keydown",e=>{if(e.target.tagName=="INPUT")return;if(e.key=="w")setMode("translate");if(e.key=="e")setMode("rotate")});
+function drawModels(){$("#models").innerHTML=[["quest1","Quest 1"],["quest2","Quest 2"],["quest3","Quest 3 / Frame"]].map(([m,l])=>`<button class="${m==model?"on":""}" data-m="${m}">${l}</button>`).join("");
+ document.querySelectorAll("[data-m]").forEach(b=>b.onclick=()=>{model=b.dataset.m;drawModels();loadController();loadMesh(true)})}
+function drawPoses(){$("#poses").innerHTML=poses.map(([p,l])=>`<button class="${p==pose?"on":""}" data-p="${p}">${l}</button>`).join("");
+ document.querySelectorAll("[data-p]").forEach(b=>b.onclick=async()=>{pose=b.dataset.p;await fetch("/pose?name="+pose,{method:"POST"});drawPoses();loadMesh(false)})}
+setInterval(()=>{if(animated.has(pose)&&!inflight)loadMesh(false)},120);
 $("#save").onclick=async()=>{const r=await (await fetch("/save",{method:"POST"})).json();$("#msg").textContent="Saved to "+r.path};
 $("#reset").onclick=async()=>{const r=await (await fetch("/reset",{method:"POST"})).json();$("#msg").textContent=r.note};
-load();
+const camViews={Outside:[-0.45,0.08,0.05],Inside:[0.45,0.08,0.05],Front:[0,0.1,-0.45],Back:[0,0.12,0.45],Top:[0.001,0.45,0.02],Under:[0.001,-0.45,0.05]};
+$("#views").innerHTML=Object.keys(camViews).map(k=>`<button data-v="${k}">${k}</button>`).join("");
+document.querySelectorAll("[data-v]").forEach(b=>b.onclick=()=>{camera.position.fromArray(camViews[b.dataset.v]);orbit.target.set(0,0,0.01);orbit.update()});
+function resize(){const w=view.clientWidth,h=view.clientHeight;renderer.setSize(w,h);camera.aspect=w/h;camera.updateProjectionMatrix()}
+addEventListener("resize",resize);resize();
+renderer.setAnimationLoop(()=>{orbit.update();renderer.render(scene,camera)});
+const st=await (await fetch("/state")).json();model=st.current;pose=st.pose;drawModels();drawPoses();loadController();loadMesh(true);
 </script></body></html>
 """
 }
