@@ -13,13 +13,13 @@ import simd
         var probe = VR4Pose(px: 0, py: 0, pz: 0, qx: 0, qy: 0, qz: 0, qw: 1)
         func at(_ depth: Float) -> Compositor.Touch? {
             // find the window surface point straight ahead by scanning z
-            for y in stride(from: Float(1.2), through: 1.8, by: 0.02) { for z in stride(from: Float(-0.3), through: -1.5, by: -0.001) {
-                probe.px = 0; probe.py = y; probe.pz = z
+            for x in [Float(0)] { for y in stride(from: Float(1.5), through: 1.8, by: 0.02) { for z in stride(from: Float(-0.3), through: -1.5, by: -0.001) {
+                probe.px = x; probe.py = y; probe.pz = z
                 if let t = comp.touch(1, grip: probe), t.depth <= 0, t.uv.y < 0.5 {
                     probe.pz = z + depth
                     return comp.touch(1, grip: probe)
                 }
-            } }
+            } } }
             return nil
         }
         guard let front = at(0.02), let through = at(-0.03) else { fatalError("no touch on the window") }

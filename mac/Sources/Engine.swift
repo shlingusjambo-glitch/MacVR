@@ -28,6 +28,7 @@ final class Shm {
 final class Engine: ObservableObject {
     let settings = Settings(), games = Games(), link = Link(), encoder = Encoder(), shm = Shm(), desktop = DesktopCapture(), audio = AudioCapture()
     let dash: Dashboard
+    private let tuner = HandTuner()
     private let comp = Compositor()   // not lazy: touched from both the render and dashboard queues
     private let rq = DispatchQueue(label: "vr4.render", qos: .userInteractive)
     /// Dashboard state, CoreGraphics drawing and texture upload live here so the render queue never waits on them.
@@ -118,6 +119,10 @@ final class Engine: ObservableObject {
             }
         }
         settings.onChange = { [weak self] in self?.rq.async { self?.applySettings() } }
+        tuner.rebuild = { [weak self] in self?.rq.async { self?.comp.rebuildHands() } }
+        tuner.setPose = { [weak self] p in self?.rq.async { self?.comp.demoPose = p } }
+        tuner.model = { [weak self] in self?.comp.shownControllerModel ?? .quest2 }
+        tuner.start()
         games.onUpdate = { [weak self] in self?.requestDraw() }
         dash.launch = { [weak self] g in
             guard let self else { return }
@@ -347,7 +352,7 @@ final class Engine: ObservableObject {
         let touch = settings.bool("direct_touch"), compact = quest && touch
         directTouch = touch
         comp.setLayout(quest: quest, compact: compact)
-        let radii: [String: Float] = compact ? ["NEAR": 0.7, "MIDDLE": 0.85, "FAR": 1.0] : quest ? ["NEAR": 1.3, "MIDDLE": 1.6, "FAR": 2.0] : ["NEAR": 1.3, "MIDDLE": 1.8, "FAR": 2.5]
+        let radii: [String: Float] = compact ? ["NEAR": 0.7, "MIDDLE": 0.85, "FAR": 1.0] : quest ? ["NEAR": 1.5, "MIDDLE": 1.8, "FAR": 2.2] : ["NEAR": 1.3, "MIDDLE": 1.8, "FAR": 2.5]
         comp.setRadius(radii[settings["dashboard_position"]] ?? radii["NEAR"]!)
         comp.setEnvironment(ProcessInfo.processInfo.environment["VR4_ENV"] ?? settings["environment"])   // VR4_ENV: README renders
         comp.setCurved(settings.bool("ui_curved"))
@@ -511,11 +516,11 @@ final class Engine: ObservableObject {
         if dashVisible {
             if let g = grabHand {
                 if valid[g] && trig[g] {
-                    if comp.updateGrab(hs[g].aim, head: t.head, push: abs(hs[g].stick_y) > 0.2 ? hs[g].stick_y * 0.025 : 0) {
+                    if comp.updateGrab(hs[g].aim, head: t.head, push: abs(hs[g].stick_y) > 0.6 ? (hs[g].stick_y - 0.6 * (hs[g].stick_y > 0 ? 1 : -1)) * 0.03 : 0) {   // wide stick dead zone: worn sticks drift
                         haptic(g, 0.8, 0.04); UISounds.shared.play("drop")   // hit the distance stop: it sticks here
                     }
                 }
-                else { grabHand = nil; UISounds.shared.play("drop"); dq.async { [self] in dash.grabbing = nil; requestDraw() } }
+                else { grabHand = nil; comp.endGrab(); UISounds.shared.play("drop"); dq.async { [self] in dash.grabbing = nil; requestDraw() } }
             }
             // direct touch: the fingertip pad presses when it reaches the surface and re-arms once lifted ~1 cm (taps type
             // fast); the hand stays on the surface unless pushed 6 cm through; while pressed, sliding drags.
@@ -528,13 +533,16 @@ final class Engine: ObservableObject {
                 let wasDown = touchDown[i]
                 touchDown[i] = poke[i] && d > -0.06 && (wasDown ? d < 0.012 : d <= 0.003 && touchDepth[i] > 0.003)
                 touchDepth[i] = touchDown[i] ? min(touchDepth[i], d) : d
-                guard onMenu, let uv = tc?.uv else { if wasDown { dq.async { [self] in dash.release(nil); requestDraw() } }; continue }
+                guard onMenu, let uv = tc?.uv else { if wasDown { dq.async { [self] in dash.touchUp(nil); requestDraw() } }; continue }
                 if poke[i] && d < 0.05 { touchUV = uv; rays[i] = nil }
-                if touchDown[i] && !wasDown {
-                    haptic(i, 0.45, 0.018)
-                    dq.async { [self] in if dash.press(uv) != .handled { dash.release(nil) }; requestDraw() }
+                if touchDown[i] && !wasDown {   // landed: light the control (sliders start moving)
+                    haptic(i, 0.3, 0.012)
+                    dq.async { [self] in dash.touchDown(uv); requestDraw() }
                 } else if touchDown[i] { dq.async { [self] in dash.drag(uv) } }
-                else if wasDown { dq.async { [self] in dash.release(uv); requestDraw() } }
+                else if wasDown {               // lifted: that's the click
+                    haptic(i, 0.5, 0.02)
+                    dq.async { [self] in dash.touchUp(uv); requestDraw() }
+                }
             }
             if let uv = touchUV { dq.async { [self] in if dash.pointer(uv) { requestDraw() } } }   // a finger at the menu drives it
             if touchUV == nil || grabHand != nil { lasers(t, hs, valid, trig, grip, &rays, poke) }

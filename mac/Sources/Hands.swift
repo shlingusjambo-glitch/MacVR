@@ -42,6 +42,21 @@ final class HandModel {
         .quest2: (SIMD3(-0.0413, 0.0163, 0.0278), simd_quatf(vector: SIMD4(0.1946, 0.8872, 0.3815, 0.1718))),
         .quest3: (SIMD3(-0.0394, 0.0080, -0.0012), simd_quatf(vector: SIMD4(0.0995, 0.9100, 0.3848, 0.1184))),
     ]
+    /// Placements saved from the hand tuner (Application Support/VR4Mac/hand-placement.json) override the built-ins.
+    static let savedURL = appSupport.appendingPathComponent("hand-placement.json")
+    static func loadSaved() {
+        guard let d = try? Data(contentsOf: savedURL), let j = try? JSONSerialization.jsonObject(with: d) as? [String: [Float]] else { return }
+        for (k, v) in j where v.count == 7 {
+            guard let m = ["quest1": HeadsetModel.quest1, "quest2": .quest2, "quest3": .quest3][k] else { continue }
+            place[m] = (SIMD3(v[0], v[1], v[2]), simd_normalize(simd_quatf(vector: SIMD4(v[3], v[4], v[5], v[6]))))
+        }
+    }
+    static func save() {
+        var j: [String: [Float]] = [:]
+        for (m, p) in place { j[["quest1", "quest2", "quest3", "frame"][m.rawValue]] = [p.pos.x, p.pos.y, p.pos.z, p.rot.vector.x, p.rot.vector.y, p.rot.vector.z, p.rot.vector.w] }
+        try? JSONSerialization.data(withJSONObject: j, options: [.prettyPrinted, .sortedKeys]).write(to: savedURL)
+    }
+    private static let loaded: Void = loadSaved()
     static var smooth = 1
     private var mirror: SIMD3<Float> { left ? SIMD3(1, 1, 1) : SIMD3(-1, 1, 1) }
 
@@ -64,6 +79,7 @@ final class HandModel {
     /// `controller`: the controller mesh this hand holds (in grip space), used to close the fingers onto its handle.
     init?(hand: Int, model: HeadsetModel, controller: SCNNode?) {
         guard let (verts, faces) = HandModel.load() else { return nil }
+        _ = HandModel.loaded
         left = hand == 0
         let m = left ? SIMD3<Float>(1, 1, 1) : SIMD3<Float>(-1, 1, 1)   // right hand: mirror the left mesh
         rest = verts.map { $0 * m }

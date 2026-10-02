@@ -37,6 +37,36 @@ final class Compositor {
             attachController(h.grip, hand: i)
         }
     }
+    /// Hand tuner: rebuild both hands (placement changed) / which controller mesh is showing.
+    func rebuildHands() {
+        for (i, h) in hands.enumerated() { h.grip.childNodes.forEach { $0.removeFromParentNode() }; attachController(h.grip, hand: i) }
+    }
+    var shownControllerModel: HeadsetModel { controllerModel.controllerMesh }
+    /// Hand tuner: play a pose on the in-home hands instead of the live controller input (nil = live).
+    var demoPose: String?
+    private func demo(_ h: VR4Hand, hand: Int) -> VR4Hand { demoPose.map { Compositor.demoInput($0, hand: hand, base: h) } ?? h }
+    /// Controller input that plays a named pose (time-animated for pull / stick circle / squeeze / play-all).
+    static func demoInput(_ pose: String, hand: Int, base: VR4Hand = VR4Hand()) -> VR4Hand {
+        var name = pose
+        var d = base
+        let t = CACurrentMediaTime()
+        let all = ["idle", "index_touch", "trigger_pull", "thumbrest", "stick", "stick_circle", "face_low", "face_high", "grip", "poke"]
+        if name == "cycle" { name = all[Int(t / 1.6) % all.count] }
+        d.buttons = 0; d.trigger = 0; d.squeeze = 0; d.stick_x = 0; d.stick_y = 0
+        let low = hand == 0 ? VR4_BTN_X : VR4_BTN_A, high = hand == 0 ? VR4_BTN_Y : VR4_BTN_B
+        switch name {
+        case "index_touch": d.buttons = UInt32(VR4_BTN_TRIGGER_TOUCH)
+        case "trigger_pull": d.buttons = UInt32(VR4_BTN_TRIGGER_TOUCH); d.trigger = Float(0.5 + 0.5 * sin(t * 3))
+        case "thumbrest": d.buttons = UInt32(VR4_BTN_TRIGGER_TOUCH | VR4_BTN_THUMB_TOUCH)
+        case "stick": d.buttons = UInt32(VR4_BTN_TRIGGER_TOUCH | VR4_BTN_STICK_TOUCH)
+        case "stick_circle": d.buttons = UInt32(VR4_BTN_TRIGGER_TOUCH | VR4_BTN_STICK_TOUCH); d.stick_x = Float(cos(t * 2)); d.stick_y = Float(sin(t * 2))
+        case "face_low": d.buttons = UInt32(VR4_BTN_TRIGGER_TOUCH | low)
+        case "face_high": d.buttons = UInt32(VR4_BTN_TRIGGER_TOUCH | high)
+        case "grip": d.buttons = UInt32(VR4_BTN_TRIGGER_TOUCH | VR4_BTN_THUMB_TOUCH); d.squeeze = Float(0.5 + 0.5 * sin(t * 3))
+        default: break
+        }
+        return d
+    }
     private(set) var radius: Float = 0
     private var cache: CVMetalTextureCache!
     private var pool: CVPixelBufferPool?, poolSize = (0, 0)
@@ -165,7 +195,7 @@ final class Compositor {
     /// Panel scales and how much nearer than the window the dock / keyboard float.
     /// Quest + direct touch: compact, within reach. Quest + lasers: further, window large, dock tucked under it.
     private var layout: (win: Float, dock: Float, kb: Float, dockZ: Float, kbZ: Float) {
-        !questLayout ? (0.78, 0.78, 0.62, 0.3, 0.55) : compact ? (0.6, 0.85, 0.6, 0.06, 0.3) : (0.62, 0.62, 0.62, 0.05, 0.45)
+        !questLayout ? (0.78, 0.78, 0.62, 0.3, 0.55) : compact ? (0.6, 0.85, 0.6, 0.06, 0.3) : (0.66, 0.42, 0.45, 0.62, 0.8)   // lasers: window far, dock and keyboard near
     }
     /// quest: Horizon-style shell; compact: direct touch on (menu in reach) vs lasers (further away).
     func setLayout(quest: Bool, compact: Bool) {
@@ -380,6 +410,12 @@ final class Compositor {
     private var grabPart = Part.window, grabDist0: Float = 1, grabScale: Float = 1, grabLocal = SIMD3<Float>(0, 0, 0)
     private var handDist0: Float = 0, grabPush: Float = 0, grabDist: Float = 1, atStop = false
     private var carried: [(SCNNode, simd_float4x4)] = []   // dragging the dock carries the window + keyboard along
+    /// Tests: world position of the window centre / its grab bar.
+    func debugWindowWorld() -> SIMD3<Float> { win.simdWorldPosition }
+    func debugGrabBarWorld() -> SIMD3<Float> {
+        let m = metersPerPx, y = (Float(Dashboard.SPLIT) / 2 - Float(Dashboard.GRAB.midY)) * m
+        return panel.simdConvertPosition(SIMD3(0, y, 0), to: nil)
+    }
     private func node(_ p: Part) -> SCNNode { p == .window ? win : p == .dock ? dockNode : kbNode }
     private func horizontal(_ a: SIMD3<Float>, _ b: SIMD3<Float>) -> Float { simd_length(SIMD2(a.x - b.x, a.z - b.z)) }
     /// Start dragging `part` at the ray's current hit.
@@ -388,36 +424,107 @@ final class Compositor {
         grabPart = part; grabDist0 = dist; grabDist = dist; grabScale = n.simdScale.x; grabPush = 0; atStop = false
         handDist0 = horizontal(o, SIMD3(head.px, head.py, head.pz))
         grabLocal = n.simdConvertPosition(o + d * dist, from: nil)
+        grabRot0 = n.simdWorldOrientation; grabStart = CACurrentMediaTime()
         carried = part == .dock ? [win, kbNode].map { ($0, n.simdWorldTransform.inverse * $0.simdWorldTransform) } : []
+        if part == .window && questLayout { beginSlots(head: head, aim: aim) }
     }
-    /// The grabbed point stays on the ray, upright and facing the head. Moving the hand forward/back (x3) or pushing the
-    /// stick sends it further or nearer; the window grows as it recedes (sqrt, so it still visibly moves back), then stops
-    /// at a limit and stays there when released. Returns true the moment it hits a stop (haptic + sound cue).
+    private var grabRot0 = simd_quatf(angle: 0, axis: SIMD3(0, 1, 0)), grabStart: CFTimeInterval = 0
+    /// The grabbed point stays on the ray at the distance it was grabbed, facing the head. SteamVR style: moving the
+    /// hand forward/back (x3) sends it further or nearer and the window grows as it recedes. The stick pushes/pulls.
+    /// Quest windows instead slide left/right between the three multitasking slots (updateSlots).
+    /// Returns true the moment it hits a distance stop (haptic + sound cue).
     @discardableResult
     func updateGrab(_ aim: VR4Pose, head: VR4Pose, push: Float) -> Bool {
+        if grabPart == .window && questLayout { updateSlots(aim); return false }
         let (o, d) = ray(aim), n = node(grabPart), h = SIMD3(head.px, head.py, head.pz)
         grabPush += push
-        // Quest: the panel stays at the distance you grabbed it (stick pushes/pulls); SteamVR: hand reach x3 sends it away
         let reach: Float = questLayout ? 0 : 3
         let maxD: Float = grabPart == .window ? 3 : 2, want = grabDist0 + grabPush + reach * (horizontal(o, h) - handDist0)
-        grabDist = min(maxD, max(0.45, want))
-        let hit = (want >= maxD || want <= 0.45) && !atStop
-        atStop = want >= maxD || want <= 0.45
+        grabDist = min(maxD, max(0.35, want))
+        let hit = (want >= maxD || want <= 0.35) && !atStop
+        atStop = want >= maxD || want <= 0.35
         if atStop { grabPush = grabDist - grabDist0 - reach * (horizontal(o, h) - handDist0) }   // no wind-up past the stop
         let p = o + d * grabDist, v = h - p
         let q = simd_quatf(angle: atan2(v.x, v.z), axis: SIMD3(0, 1, 0))
         // Quest style faces you wherever it's dragged. SteamVR style stays upright near eye level and pitches to face
         // you once dragged well above or below the head (smoothly, from ~20 deg).
         let elev = atan2(v.y, simd_length(SIMD2(v.x, v.z)))
-        let blend = questLayout ? 1 : min(1, max(0, (abs(elev) - 0.35) / 0.3))   // Quest: always faces you
-        let base: Float = grabPart == .dock ? -0.35 : grabPart == .keyboard ? -0.7 : 0
+        let blend = questLayout ? 1 : min(1, max(0, (abs(elev) - 0.35) / 0.3))
+        let base: Float = grabPart == .dock ? (questLayout ? -0.18 : -0.35) : grabPart == .keyboard ? -0.6 : 0
         let tilt = simd_quatf(angle: base + (-elev - base) * blend, axis: SIMD3(1, 0, 0))
         let sc = grabPart == .window && !questLayout ? min(2.2, max(0.45, grabScale * (grabDist / grabDist0).squareRoot())) : grabScale
+        // turn toward the new facing over ~0.15 s instead of snapping on grab
+        let rot = simd_slerp(grabRot0, q * tilt, Float(min(1, (CACurrentMediaTime() - grabStart) / 0.15)))
         n.simdScale = SIMD3(repeating: sc)
-        n.simdWorldOrientation = q * tilt
-        n.simdWorldPosition = p - (q * tilt).act(grabLocal * sc)
+        n.simdWorldOrientation = rot
+        n.simdWorldPosition = p - rot.act(grabLocal * sc)
         for (c, rel) in carried { c.simdWorldTransform = n.simdWorldTransform * rel }
         return hit
+    }
+    func endGrab() { if grabPart == .window && questLayout { endSlots() } }
+
+    // MARK: multitasking (Quest style): an app window being dragged slides left/right around you across three slots
+    // shown as transparent window-sized frames inside one wide transparent band; on release it glides into the nearest.
+    private let slotsNode = SCNNode()
+    private var slotCenter: SIMD3<Float> = .zero, slotR: Float = 1, slotY: Float = 0, slotYaw0: Float = 0, slotStep: Float = 0
+    private var slotTilt = simd_quatf(angle: 0, axis: SIMD3(1, 0, 0)), rayYaw0: Float = 0, winYaw: Float = 0
+    private var snapFrom: Float = 0, snapTo: Float = 0, snapStart: CFTimeInterval = 0, snapping = false
+    private func yawAround(_ p: SIMD3<Float>) -> Float { atan2(p.x - slotCenter.x, p.z - slotCenter.z) }
+    private func beginSlots(head: VR4Pose, aim: VR4Pose) {
+        slotCenter = SIMD3(head.px, head.py, head.pz)
+        let w = win.simdWorldPosition
+        slotR = max(0.4, horizontal(w, slotCenter)); slotY = w.y
+        winYaw = yawAround(w); slotYaw0 = atan2(-sin(dash.simdEulerAngles.y) * 0 + (dash.simdWorldPosition.x - slotCenter.x), dash.simdWorldPosition.z - slotCenter.z)
+        let width = Float(Dashboard.WIN.width) * metersPerPx * win.simdScale.x
+        slotStep = (width + 0.06) / slotR
+        let face = simd_quatf(angle: winYaw + .pi, axis: SIMD3(0, 1, 0))   // facing the head
+        slotTilt = face.inverse * win.simdWorldOrientation
+        let (o, d) = ray(aim); _ = o; rayYaw0 = atan2(d.x, d.z)
+        // the band and its three frames, bent around you at the window's distance
+        slotsNode.childNodes.forEach { $0.removeFromParentNode() }
+        let h = Float(Dashboard.WIN.height) * metersPerPx * win.simdScale.x
+        func frame(_ w: Float, _ h: Float, _ a: CGFloat) -> SCNNode {
+            let g = Compositor.bent(w: w, h: h, r: slotR, seg: 48)
+            g.firstMaterial?.diffuse.contents = NSColor(white: 1, alpha: a); g.firstMaterial?.blendMode = .alpha
+            g.firstMaterial?.writesToDepthBuffer = false; g.firstMaterial?.readsFromDepthBuffer = false
+            let n = SCNNode(geometry: g); n.renderingOrder = 9; return n
+        }
+        let band = frame(slotR * slotStep * 3 + 0.08, h + 0.08, 0.06)
+        band.simdPosition = SIMD3(sin(slotYaw0) * slotR, 0, cos(slotYaw0) * slotR) + SIMD3(slotCenter.x, slotY, slotCenter.z)
+        band.simdOrientation = simd_quatf(angle: slotYaw0 + .pi, axis: SIMD3(0, 1, 0)) * slotTilt
+        slotsNode.addChildNode(band)
+        for k in -1...1 {
+            let f = frame(width, h, 0.1), a = slotYaw0 + Float(k) * slotStep
+            f.simdPosition = SIMD3(sin(a) * slotR, 0, cos(a) * slotR) + SIMD3(slotCenter.x, slotY, slotCenter.z)
+            f.simdOrientation = simd_quatf(angle: a + .pi, axis: SIMD3(0, 1, 0)) * slotTilt
+            slotsNode.addChildNode(f)
+        }
+        if slotsNode.parent == nil { scene.rootNode.addChildNode(slotsNode) }
+        slotsNode.isHidden = false; slotsNode.opacity = 1; snapping = false
+    }
+    private func placeWindow(yaw: Float) {
+        winYaw = yaw
+        win.simdWorldPosition = SIMD3(slotCenter.x + sin(yaw) * slotR, slotY, slotCenter.z + cos(yaw) * slotR)
+        win.simdWorldOrientation = simd_quatf(angle: yaw + .pi, axis: SIMD3(0, 1, 0)) * slotTilt
+    }
+    private func updateSlots(_ aim: VR4Pose) {
+        let (_, d) = ray(aim), rayYaw = atan2(d.x, d.z)
+        var dy = rayYaw - rayYaw0
+        if dy > .pi { dy -= 2 * .pi } else if dy < -.pi { dy += 2 * .pi }
+        rayYaw0 = rayYaw
+        placeWindow(yaw: min(slotYaw0 + slotStep, max(slotYaw0 - slotStep, winYaw + dy * 1.4)))
+    }
+    private func endSlots() {
+        let k = ((winYaw - slotYaw0) / slotStep).rounded()
+        snapFrom = winYaw; snapTo = slotYaw0 + min(1, max(-1, k)) * slotStep; snapStart = CACurrentMediaTime(); snapping = true
+    }
+    /// Per frame: glide the released window into its slot (ease-out, 0.22 s) and fade the frames out.
+    private func tickSlots() {
+        guard snapping else { return }
+        let t = Float(min(1, (CACurrentMediaTime() - snapStart) / 0.22)), e = 1 - pow(1 - t, 3)
+        placeWindow(yaw: snapFrom + (snapTo - snapFrom) * e)
+        slotsNode.opacity = CGFloat(1 - t)
+        if t >= 1 { snapping = false; slotsNode.isHidden = true }
     }
 
     /// Thumbstick left/right on the Mac desktop: resize the window (bigger = more readable desktop text).
@@ -626,13 +733,15 @@ final class Compositor {
     /// `push`: offset holding a hand (and its controller) on a panel it touches. `poke`: hand near the menu points its
     /// index (and hides its laser).
     func updateHands(_ t: VR4Tracking, rays: [Float?], push: [SIMD3<Float>] = [.zero, .zero], poke: [Bool] = [false, false]) {
+        tickSlots()   // runs every frame: window snap animation
         let hs = [t.hand.0, t.hand.1]
         for (i, h) in hs.enumerated() {
             let valid = h.flags & UInt32(VR4_HAND_POSE_VALID) != 0
             let n = hands[i]
             n.grip.isHidden = !valid; n.aim.isHidden = !valid || (dash.isHidden && !lasersAlways)
             n.grip.simdPosition = SIMD3(h.grip.px, h.grip.py, h.grip.pz) + push[i]; n.grip.simdOrientation = simd_quatf(ix: h.grip.qx, iy: h.grip.qy, iz: h.grip.qz, r: h.grip.qw)
-            if valid { rigs[i].update(h); handModels[i]?.update(h, targets: rigs[i].targets(), poke: poke[i]) }
+            let h = demo(h, hand: i), pk = demoPose == "poke" || demoPose == "cycle" && Int(CACurrentMediaTime() / 1.6) % 10 == 9 ? true : poke[i]
+            if valid { rigs[i].update(h); handModels[i]?.update(h, targets: rigs[i].targets(), poke: pk) }
             if poke[i] { n.aim.isHidden = true }
             n.aim.simdPosition = SIMD3(h.aim.px, h.aim.py, h.aim.pz); n.aim.simdOrientation = simd_quatf(ix: h.aim.qx, iy: h.aim.qy, iz: h.aim.qz, r: h.aim.qw)
             let len = rays[i] ?? 3

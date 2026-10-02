@@ -110,7 +110,7 @@ final class Dashboard {
     /// Window area below the title (Quest: the title bar is at the bottom, so content starts higher).
     private var content: CGRect { quest ? CGRect(x: 164, y: 64, width: 1720, height: 764) : Dashboard.content }
     /// The control was just clicked: shows a brief depressed state (a fraction of a second).
-    private func isPressed(_ id: String) -> Bool { pressed.map { $0.0 == id && CACurrentMediaTime() - $0.1 < 0.12 } ?? false }
+    private func isPressed(_ id: String) -> Bool { touchPending?.0.id == id || (pressed.map { $0.0 == id && CACurrentMediaTime() - $0.1 < 0.12 } ?? false) }
 
     init(settings: Settings, games: Games) {
         self.settings = settings; self.games = games
@@ -176,6 +176,26 @@ final class Dashboard {
         navved = false; inPress = true; r.fn?(); inPress = false
         sounds.play(navved ? "open" : "tap")   // at commit: a soft confirm when a window opens, else a tick
         return .handled
+    }
+    /// Direct touch: a fingertip landing on a control. Sliders and the Mac desktop act at once (and follow the finger);
+    /// buttons and keys only light up and fire when the finger lifts (touchUp), like Horizon OS.
+    private var touchPending: (Region, CGPoint)?
+    func touchDown(_ uv: CGPoint) {
+        guard let r = region(uv), !r.id.hasPrefix("grab") else { return }
+        if let d = r.drag { capture = r; d(px(uv), 1); return }
+        touchPending = (r, px(uv)); sounds.play("hover")
+    }
+    /// Finger lifted: fires the touched button if the finger is still on it (a few px of slide while lifting is fine).
+    func touchUp(_ uv: CGPoint?) {
+        if capture != nil { release(uv); return }
+        guard let (r, at) = touchPending else { return }
+        touchPending = nil
+        let p = uv.map(px) ?? at
+        guard r.r.insetBy(dx: -18, dy: -18).contains(p) || hypot(p.x - at.x, p.y - at.y) < 30 else { return }
+        if menuFor != nil && !r.id.hasPrefix("ctx:") && !r.id.hasPrefix("more:") { menuFor = nil }
+        pressed = (r.id, CACurrentMediaTime()); animatingUntil = max(animatingUntil, CACurrentMediaTime() + 0.15)
+        navved = false; inPress = true; r.fn?(); inPress = false
+        sounds.play(navved ? "open" : "tap")
     }
     func drag(_ uv: CGPoint) { capture?.drag?(px(uv), 2) }
     func release(_ uv: CGPoint?) {
@@ -249,7 +269,7 @@ final class Dashboard {
     }
     /// Button background; hover is a lighter flat fill.
     private func face(_ r: CGRect, _ rad: CGFloat, on: Bool, base: UInt32 = 0x353d49ff, hot: UInt32 = 0x4f5a69ff) {
-        rr(r, rad, on && pressed.map({ CACurrentMediaTime() - $0.1 < 0.12 }) == true ? 0x2a313aff : on ? hot : base)
+        rr(r, rad, on && (touchPending != nil || pressed.map({ CACurrentMediaTime() - $0.1 < 0.12 }) == true) ? 0x2a313aff : on ? hot : base)
     }
     private func txt(_ s: String, _ x: CGFloat, _ y: CGFloat, _ size: CGFloat, _ c: UInt32 = 0xffffffff, bold: Bool = false,
                      align: CGFloat = 0, maxW: CGFloat = 5000) {
