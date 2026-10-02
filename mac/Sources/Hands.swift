@@ -33,14 +33,14 @@ final class HandModel {
         [SIMD3(0.0000, 0.0304, 0.0290), SIMD3(-0.0072, 0.0261, 0.0580), SIMD3(-0.0167, 0.0181, 0.0769), SIMD3(-0.0203, 0.0102, 0.0986)],
     ]
     /// Mesh space -> grip space for the left hand per controller mesh (the right hand is mirrored across grip x).
-    /// Tuned so the palm sits on the outer side of each handle.
-    typealias Placement = (pos: SIMD3<Float>, euler: SIMD3<Float>)
-    static var place: [HeadsetModel: Placement] = [   // fitted offline: palm on the handle, fingertips on its surface,
-        // index on the trigger, thumb able to reach the thumbrest, stick and both face buttons, least overlap,
-        // a straight index along the aim ray
-        .quest1: (SIMD3(-0.0389, 0.0122, 0.0402), SIMD3(0.52, 2.9916, 0.15)),
-        .quest2: (SIMD3(-0.0388, 0.0097, 0.026), SIMD3(0.4975, 3.0741, -0.0225)),
-        .quest3: (SIMD3(-0.0349, 0.0095, 0.0252), SIMD3(0.6588, 3.1116, 0.12)),
+    /// Built by aligning the palm's grip line (index knuckle down to the heel of the hand, pinky side) with each
+    /// handle's axis, palm resting on it, then turned/slid along the handle so the index lands on the trigger and the
+    /// thumb reaches the stick and face buttons (tools/handfit).
+    typealias Placement = (pos: SIMD3<Float>, rot: simd_quatf)
+    static var place: [HeadsetModel: Placement] = [
+        .quest1: (SIMD3(-0.0372, 0.0259, 0.0366), simd_quatf(vector: SIMD4(0.3609, 0.8524, 0.3353, 0.1752))),
+        .quest2: (SIMD3(-0.0413, 0.0163, 0.0278), simd_quatf(vector: SIMD4(0.1946, 0.8872, 0.3815, 0.1718))),
+        .quest3: (SIMD3(-0.0394, 0.0080, -0.0012), simd_quatf(vector: SIMD4(0.0995, 0.9100, 0.3848, 0.1184))),
     ]
     static var smooth = 1
     private var mirror: SIMD3<Float> { left ? SIMD3(1, 1, 1) : SIMD3(-1, 1, 1) }
@@ -128,13 +128,13 @@ final class HandModel {
             // Horizon OS hands: smoky dark glass with a thin light outline at the silhouette
             float rim = 1.0 - abs(dot(normalize(_surface.normal), normalize(_surface.view)));
             float edge = smoothstep(0.9, 0.99, rim);
-            float a = _surface.diffuse.a * mix(0.55, 0.8, edge);
+            float a = _surface.diffuse.a * mix(0.68, 0.85, edge);   // palm nearly as solid as the fingers
             float3 c = mix(float3(0.17, 0.18, 0.2), float3(0.78, 0.8, 0.83), edge);
             _output.color = float4(c * a, a);
             """] }
         let pl = HandModel.place[model.controllerMesh] ?? HandModel.place[.quest2]!
-        let e = pl.euler * SIMD3(1, left ? 1 : -1, left ? 1 : -1)   // mirrored across grip x for the right hand
-        node.simdOrientation = simd_quatf(angle: e.x, axis: SIMD3(1, 0, 0)) * simd_quatf(angle: e.y, axis: SIMD3(0, 1, 0)) * simd_quatf(angle: e.z, axis: SIMD3(0, 0, 1))
+        let v = pl.rot.vector   // mirrored across grip x for the right hand
+        node.simdOrientation = left ? pl.rot : simd_quatf(vector: SIMD4(v.x, -v.y, -v.z, v.w))
         node.simdPosition = pl.pos * mirror
         node.renderingOrder = 10   // after the opaque controller
         node.castsShadow = false

@@ -973,7 +973,7 @@ final class Dashboard {
     private static let sectionKeys: [String: [String]] = [
         "general": ["render_scale", "refresh_rate"], "video": ["bitrate", "codec", "show_fps"],
         "controllers": ["controller_model", "system_button"], "environment": ["floor_grid"],
-        "menu": ["menu_style", "dashboard_position", "ui_curved", "show_desktop_tabs", "show_settings_tab", "show_power"], "developer": ["show_fps"],
+        "menu": ["menu_style", "direct_touch", "dashboard_position", "ui_curved", "show_desktop_tabs", "show_settings_tab", "show_power"], "developer": ["show_fps"],
     ]
     private func drawSettings() {
         let w = Dashboard.WIN

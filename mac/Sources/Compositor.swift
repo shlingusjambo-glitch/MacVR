@@ -160,31 +160,33 @@ final class Compositor {
         screen.geometry = nil
         resetLayout()
     }
-    private var questLayout = true
+    private var questLayout = true, compact = true
     private var bend: [ObjectIdentifier: Float] = [:]
     /// Panel scales and how much nearer than the window the dock / keyboard float.
+    /// Quest + direct touch: compact, within reach. Quest + lasers: further, window large, dock tucked under it.
     private var layout: (win: Float, dock: Float, kb: Float, dockZ: Float, kbZ: Float) {
-        questLayout ? (0.42, 0.7, 0.45, 0.06, 0.3) : (0.78, 0.78, 0.62, 0.3, 0.55)
+        !questLayout ? (0.78, 0.78, 0.62, 0.3, 0.55) : compact ? (0.6, 0.85, 0.6, 0.06, 0.3) : (0.62, 0.62, 0.62, 0.05, 0.45)
     }
-    func setQuestLayout(_ on: Bool) {
-        guard on != questLayout else { return }
-        questLayout = on
+    /// quest: Horizon-style shell; compact: direct touch on (menu in reach) vs lasers (further away).
+    func setLayout(quest: Bool, compact: Bool) {
+        guard quest != questLayout || compact != self.compact else { return }
+        questLayout = quest; self.compact = compact
         let r = radius; radius = 0; setRadius(r)   // rebuild the panels for the new layout
     }
     /// Window above, dock below, exactly as laid out on the canvas.
     private func resetLayout() {
         let m = metersPerPx
         win.simdTransform = matrix_identity_float4x4; dockNode.simdTransform = matrix_identity_float4x4; kbNode.simdTransform = matrix_identity_float4x4
-        if questLayout {   // Horizon OS: a compact window with the dock right under it, about as wide, both in reach
+        if questLayout {   // Horizon OS: the window with the dock right under it, about as wide
             win.simdPosition = SIMD3(0, 0.08, 0)
             let L = layout
-            win.simdScale = SIMD3(repeating: L.win)           // ~45 deg wide
+            win.simdScale = SIMD3(repeating: L.win)           // ~48 deg wide
             let winBottom = 0.08 - L.win * Float(Dashboard.SPLIT) * m / 2
             dockNode.simdPosition = SIMD3(0, winBottom - 0.075 * radius / 0.95, L.dockZ)   // just below the window's grab bar, a touch closer
-            dockNode.simdEulerAngles = SIMD3(-0.18, 0, 0)
+            dockNode.simdEulerAngles = SIMD3(compact ? -0.18 : -0.1, 0, 0)
             dockNode.simdScale = SIMD3(repeating: L.dock)
-            kbNode.simdPosition = SIMD3(0, winBottom - 0.27 * radius / 0.95, L.kbZ)
-            kbNode.simdEulerAngles = SIMD3(-0.6, 0, 0)
+            kbNode.simdPosition = SIMD3(0, winBottom - (compact ? 0.2 : 0.27) * radius / 0.95, L.kbZ)
+            kbNode.simdEulerAngles = SIMD3(compact ? -0.5 : -0.6, 0, 0)   // compact: tilted toward the fingers for typing
             kbNode.simdScale = SIMD3(repeating: L.kb)
             return
         }
@@ -395,11 +397,13 @@ final class Compositor {
     func updateGrab(_ aim: VR4Pose, head: VR4Pose, push: Float) -> Bool {
         let (o, d) = ray(aim), n = node(grabPart), h = SIMD3(head.px, head.py, head.pz)
         grabPush += push
-        let maxD: Float = grabPart == .window ? 3 : 2, want = grabDist0 + grabPush + 3 * (horizontal(o, h) - handDist0)
+        // Quest: the panel stays at the distance you grabbed it (stick pushes/pulls); SteamVR: hand reach x3 sends it away
+        let reach: Float = questLayout ? 0 : 3
+        let maxD: Float = grabPart == .window ? 3 : 2, want = grabDist0 + grabPush + reach * (horizontal(o, h) - handDist0)
         grabDist = min(maxD, max(0.45, want))
         let hit = (want >= maxD || want <= 0.45) && !atStop
         atStop = want >= maxD || want <= 0.45
-        if atStop { grabPush = grabDist - grabDist0 - 3 * (horizontal(o, h) - handDist0) }   // no wind-up past the stop
+        if atStop { grabPush = grabDist - grabDist0 - reach * (horizontal(o, h) - handDist0) }   // no wind-up past the stop
         let p = o + d * grabDist, v = h - p
         let q = simd_quatf(angle: atan2(v.x, v.z), axis: SIMD3(0, 1, 0))
         // Quest style faces you wherever it's dragged. SteamVR style stays upright near eye level and pitches to face
@@ -408,7 +412,7 @@ final class Compositor {
         let blend = questLayout ? 1 : min(1, max(0, (abs(elev) - 0.35) / 0.3))   // Quest: always faces you
         let base: Float = grabPart == .dock ? -0.35 : grabPart == .keyboard ? -0.7 : 0
         let tilt = simd_quatf(angle: base + (-elev - base) * blend, axis: SIMD3(1, 0, 0))
-        let sc = grabPart == .window ? min(2.2, max(0.45, grabScale * (grabDist / grabDist0).squareRoot())) : grabScale
+        let sc = grabPart == .window && !questLayout ? min(2.2, max(0.45, grabScale * (grabDist / grabDist0).squareRoot())) : grabScale
         n.simdScale = SIMD3(repeating: sc)
         n.simdWorldOrientation = q * tilt
         n.simdWorldPosition = p - (q * tilt).act(grabLocal * sc)

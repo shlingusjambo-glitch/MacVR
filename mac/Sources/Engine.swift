@@ -63,6 +63,7 @@ final class Engine: ObservableObject {
     private var prevButtons: [UInt32] = [0, 0], prevTrigger: [Bool] = [false, false], prevGrip: [Bool] = [false, false], activeHand = 1
     /// Direct touch: the index fingertip is pressing a panel (tap = click, slide = drag); last fingertip depth.
     private var touchDown = [false, false], touchDepth: [Float] = [1, 1]
+    private var directTouch = true
     private var grabHand: Int?                       // rq: hand dragging the window or dock by its grab bar
     private var desktopRect = CGRect.zero            // rq copy of dash.desktopRect
     private var detected: HeadsetModel = .quest2     // from HELLO
@@ -343,8 +344,11 @@ final class Engine: ObservableObject {
     private func applySettings() {
         applyControllers()
         let quest = settings["menu_style"] != "SteamVR"   // Quest: a small window at arm's length, dock down by the hands
-        comp.setQuestLayout(quest)
-        comp.setRadius((quest ? ["NEAR": 0.7, "MIDDLE": 0.95, "FAR": 1.3] : ["NEAR": 1.3, "MIDDLE": 1.8, "FAR": 2.5])[settings["dashboard_position"]] ?? (quest ? 0.7 : 1.3))
+        let touch = settings.bool("direct_touch"), compact = quest && touch
+        directTouch = touch
+        comp.setLayout(quest: quest, compact: compact)
+        let radii: [String: Float] = compact ? ["NEAR": 0.7, "MIDDLE": 0.85, "FAR": 1.0] : quest ? ["NEAR": 1.3, "MIDDLE": 1.6, "FAR": 2.0] : ["NEAR": 1.3, "MIDDLE": 1.8, "FAR": 2.5]
+        comp.setRadius(radii[settings["dashboard_position"]] ?? radii["NEAR"]!)
         comp.setEnvironment(ProcessInfo.processInfo.environment["VR4_ENV"] ?? settings["environment"])   // VR4_ENV: README renders
         comp.setCurved(settings.bool("ui_curved"))
         comp.setGrid(settings.bool("floor_grid"))
@@ -513,20 +517,21 @@ final class Engine: ObservableObject {
                 }
                 else { grabHand = nil; UISounds.shared.play("drop"); dq.async { [self] in dash.grabbing = nil; requestDraw() } }
             }
-            // direct touch: a fingertip on a panel holds the hand at the surface (unless pushed 6 cm through) and taps click
+            // direct touch: the fingertip pad presses when it reaches the surface and re-arms once lifted ~1 cm (taps type
+            // fast); the hand stays on the surface unless pushed 6 cm through; while pressed, sliding drags.
             var touchUV: CGPoint?
-            for i in 0..<2 {
+            for i in 0..<2 where directTouch {
                 let tc = valid[i] ? comp.touch(i, grip: hs[i].grip) : nil
                 let onMenu = tc.map { dash.solid($0.uv) } ?? false, d = onMenu ? tc!.depth : 1
-                poke[i] = onMenu && d < 0.12
-                if onMenu && d <= 0 && d > -0.06 { push[i] = tc!.normal * -d }
-                let wasDown = touchDown[i], down = onMenu && d <= 0 && d > -0.06 && (wasDown || touchDepth[i] > 0)
-                touchDown[i] = down && (wasDown || d > -0.03)   // entering from the front only, not by pushing through
-                touchDepth[i] = d
+                poke[i] = onMenu && d < 0.12 && !trig[i]   // pulling the trigger keeps the laser
+                if onMenu && d < 0 && d > -0.06 { push[i] = tc!.normal * -d }
+                let wasDown = touchDown[i]
+                touchDown[i] = poke[i] && d > -0.06 && (wasDown ? d < 0.012 : d <= 0.003 && touchDepth[i] > 0.003)
+                touchDepth[i] = touchDown[i] ? min(touchDepth[i], d) : d
                 guard onMenu, let uv = tc?.uv else { if wasDown { dq.async { [self] in dash.release(nil); requestDraw() } }; continue }
-                if d < 0.04 { touchUV = uv; rays[i] = nil }
+                if poke[i] && d < 0.05 { touchUV = uv; rays[i] = nil }
                 if touchDown[i] && !wasDown {
-                    haptic(i, 0.5, 0.02)
+                    haptic(i, 0.45, 0.018)
                     dq.async { [self] in if dash.press(uv) != .handled { dash.release(nil) }; requestDraw() }
                 } else if touchDown[i] { dq.async { [self] in dash.drag(uv) } }
                 else if wasDown { dq.async { [self] in dash.release(uv); requestDraw() } }

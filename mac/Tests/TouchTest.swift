@@ -6,7 +6,7 @@ import simd
     static func main() {
         setvbuf(stdout, nil, _IONBF, 0)
         let comp = Compositor()
-        comp.setQuestLayout(true); comp.setRadius(0.95)
+        comp.setLayout(quest: true, compact: true); comp.setRadius(0.7)
         comp.place(head: VR4Pose(px: 0, py: 1.6, pz: 0, qx: 0, qy: 0, qz: 0, qw: 1))
         comp.setDashVisible(true)
         // window centre in world, from the panel uv we expect back
