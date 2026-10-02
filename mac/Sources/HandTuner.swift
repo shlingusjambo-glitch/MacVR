@@ -65,7 +65,9 @@ final class HandTuner {
             let y = asin(max(-1, min(1, r.columns.2.x))), x = atan2(-r.columns.2.y, r.columns.2.z), z = atan2(-r.columns.1.x, r.columns.0.x)
             out[n] = [p.pos.x * 1000, p.pos.y * 1000, p.pos.z * 1000, x * 180 / .pi, y * 180 / .pi, z * 180 / .pi]
         }
-        return ["placements": out, "current": HandTuner.names.first { $0.1 == model() }?.0 ?? "quest2", "pose": pose]
+        var bones: [String: [Float]] = [:]
+        for (n, m) in HandTuner.names { bones[n] = (HandModel.boneOffsets[m] ?? Array(repeating: 0, count: 15)).map { $0 * 180 / .pi } }
+        return ["placements": out, "bones": bones, "look": HandModel.look, "current": HandTuner.names.first { $0.1 == model() }?.0 ?? "quest2", "pose": pose]
     }
 
     private func respond(_ c: NWConnection, _ r: Req) {
@@ -104,6 +106,17 @@ final class HandTuner {
                 return ["pos": [pl.pos.x, pl.pos.y, pl.pos.z], "rot": [q.x, q.y, q.z, q.w], "verts": verts, "idx": idx]
             }
             if let out { json(c, out) } else { send(c, "500 Internal Server Error", "text/plain", Data()) }
+        case ("POST", "/bones"):   // manual joint tweaks, degrees, 15 per controller
+            guard let o = try? JSONSerialization.jsonObject(with: r.body) as? [String: Any], let n = o["model"] as? String,
+                  let m = HandTuner.names.first(where: { $0.0 == n })?.1, let v = (o["v"] as? [NSNumber])?.map(\.floatValue), v.count == 15 else {
+                send(c, "400 Bad Request", "text/plain", Data()); return }
+            HandModel.boneOffsets[m] = v.map { $0 * .pi / 180 }
+            rebuild(); json(c, ["ok": true])
+        case ("POST", "/look"):   // fill RGB, edge RGB, fill opacity, edge opacity, edge width
+            guard let o = try? JSONSerialization.jsonObject(with: r.body) as? [String: Any], let v = (o["v"] as? [NSNumber])?.map(\.floatValue),
+                  v.count == HandModel.look.count else { send(c, "400 Bad Request", "text/plain", Data()); return }
+            HandModel.look = v
+            rebuild(); json(c, ["ok": true])
         case ("POST", "/pose"):
             pose = r.query["name"] ?? "live"
             setPose(pose == "live" ? nil : pose); json(c, ["ok": true])
@@ -151,6 +164,9 @@ button.on,button.primary{background:var(--blue);color:#fff}
 input[type=number]{width:56px;background:transparent;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:3px 5px;font:inherit}
 #msg{color:var(--dim);font-size:12px;margin-top:8px;min-height:16px}
 kbd{border:1px solid var(--line);border-radius:4px;padding:0 4px;font-size:11px}
+.sl{display:grid;grid-template-columns:96px 1fr 40px;gap:8px;align-items:center;color:var(--dim);margin:6px 0}
+.sl output{font-variant-numeric:tabular-nums;text-align:right}
+input[type=color]{width:34px;height:24px;border:0;background:none;padding:0;vertical-align:middle}
 </style>
 <script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
 </head><body><div id="view"></div>
@@ -163,6 +179,13 @@ kbd{border:1px solid var(--line);border-radius:4px;padding:0 4px;font-size:11px}
 <div class="row"><button id="mT" class="on">Move <kbd>W</kbd></button><button id="mR">Rotate <kbd>E</kbd></button></div>
 <div class="row" style="margin-top:6px"><button id="sm" class="on">Smooth</button><button id="sn">Snap</button>
 <label>Step <input id="stepT" type="number" value="1" min="0.1" step="0.5"> mm</label><label><input id="stepR" type="number" value="5" min="1" step="1"> °</label></div>
+<h2>Fingers (adds to the automatic pose)</h2>
+<div class="row" id="fingers"></div><div id="joints"></div>
+<h2>Material</h2>
+<div class="row"><label>Fill <input id="fillC" type="color"></label><label>Edge <input id="edgeC" type="color"></label></div>
+<label class="sl">Fill opacity <input id="fillA" type="range" min="0" max="1" step="0.01"></label>
+<label class="sl">Edge opacity <input id="edgeA" type="range" min="0" max="1" step="0.01"></label>
+<label class="sl">Edge width <input id="edgeW" type="range" min="0.05" max="1" step="0.01"></label>
 <h2>Play a pose</h2><div class="row" id="poses"></div>
 <h2>Placement</h2><div class="row"><button class="primary" id="save">Save</button><button id="reset">Forget saved</button></div>
 <div id="msg"></div>
@@ -217,9 +240,22 @@ function setMode(m){gizmo.setMode(m);$("#mT").classList.toggle("on",m=="translat
 $("#mT").onclick=()=>setMode("translate");$("#mR").onclick=()=>setMode("rotate");
 addEventListener("keydown",e=>{if(e.target.tagName=="INPUT")return;if(e.key=="w")setMode("translate");if(e.key=="e")setMode("rotate")});
 function drawModels(){$("#models").innerHTML=[["quest1","Quest 1"],["quest2","Quest 2"],["quest3","Quest 3 / Frame"]].map(([m,l])=>`<button class="${m==model?"on":""}" data-m="${m}">${l}</button>`).join("");
- document.querySelectorAll("[data-m]").forEach(b=>b.onclick=()=>{model=b.dataset.m;drawModels();loadController();loadMesh(true)})}
+ document.querySelectorAll("[data-m]").forEach(b=>b.onclick=()=>{model=b.dataset.m;drawModels();drawFingers();loadController();loadMesh(true)})}
 function drawPoses(){$("#poses").innerHTML=poses.map(([p,l])=>`<button class="${p==pose?"on":""}" data-p="${p}">${l}</button>`).join("");
  document.querySelectorAll("[data-p]").forEach(b=>b.onclick=async()=>{pose=b.dataset.p;await fetch("/pose?name="+pose,{method:"POST"});drawPoses();loadMesh(false)})}
+const fingerNames=["Pinky","Ring","Middle","Index","Thumb"],jointNames=["Knuckle","Middle","Tip"];
+let finger=2,bones=null,look=null,boneTimer=null,lookTimer=null;
+function drawFingers(){$("#fingers").innerHTML=fingerNames.map((n,i)=>`<button class="${i==finger?"on":""}" data-f="${i}">${n}</button>`).join("");
+ document.querySelectorAll("[data-f]").forEach(b=>b.onclick=()=>{finger=+b.dataset.f;drawFingers()});
+ const v=bones[model];
+ $("#joints").innerHTML=jointNames.map((n,k)=>`<label class="sl">${n}<input type="range" min="-90" max="90" step="1" value="${v[finger*3+k]}" data-j="${finger*3+k}"><output>${Math.round(v[finger*3+k])}°</output></label>`).join("");
+ document.querySelectorAll("[data-j]").forEach(r=>r.oninput=()=>{bones[model][+r.dataset.j]=+r.value;r.nextElementSibling.textContent=r.value+"°";
+  clearTimeout(boneTimer);boneTimer=setTimeout(async()=>{await fetch("/bones",{method:"POST",body:JSON.stringify({model,v:bones[model]})});loadMesh(false)},80)})}
+const hex=a=>"#"+a.map(x=>Math.round(x*255).toString(16).padStart(2,"0")).join(""),rgb=h=>[1,3,5].map(i=>parseInt(h.slice(i,i+2),16)/255);
+function drawLook(){$("#fillC").value=hex(look.slice(0,3));$("#edgeC").value=hex(look.slice(3,6));$("#fillA").value=look[6];$("#edgeA").value=look[7];$("#edgeW").value=look[8];
+ handMat.color.setRGB(look[0]*1.6+0.15,look[1]*1.6+0.15,look[2]*1.6+0.15);handMat.opacity=Math.max(0.15,look[6])}
+["fillC","edgeC","fillA","edgeA","edgeW"].forEach(id=>$("#"+id).oninput=()=>{look=[...rgb($("#fillC").value),...rgb($("#edgeC").value),+$("#fillA").value,+$("#edgeA").value,+$("#edgeW").value];drawLook();
+ clearTimeout(lookTimer);lookTimer=setTimeout(()=>fetch("/look",{method:"POST",body:JSON.stringify({v:look})}),120)});
 setInterval(()=>{if(animated.has(pose)&&!inflight)loadMesh(false)},120);
 $("#save").onclick=async()=>{const r=await (await fetch("/save",{method:"POST"})).json();$("#msg").textContent="Saved to "+r.path};
 $("#reset").onclick=async()=>{const r=await (await fetch("/reset",{method:"POST"})).json();$("#msg").textContent=r.note};
@@ -229,7 +265,7 @@ document.querySelectorAll("[data-v]").forEach(b=>b.onclick=()=>{camera.position.
 function resize(){const w=view.clientWidth,h=view.clientHeight;renderer.setSize(w,h);camera.aspect=w/h;camera.updateProjectionMatrix()}
 addEventListener("resize",resize);resize();
 renderer.setAnimationLoop(()=>{orbit.update();renderer.render(scene,camera)});
-const st=await (await fetch("/state")).json();model=st.current;pose=st.pose;drawModels();drawPoses();loadController();loadMesh(true);
+const st=await (await fetch("/state")).json();model=st.current;pose=st.pose;bones=st.bones;look=st.look;drawModels();drawPoses();drawFingers();drawLook();loadController();loadMesh(true);
 </script></body></html>
 """
 }

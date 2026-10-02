@@ -10,7 +10,7 @@ import simd
 /// when lifted, and the thumb finds the stick, thumbrest or pressed face button, or lifts off. Fades out at the wrist.
 final class HandModel {
     let node = SCNNode()
-    private let left: Bool
+    private let left: Bool, meshModel: HeadsetModel
     private let rest: [SIMD3<Float>], restN: [SIMD3<Float>], colors: Data, element: SCNGeometryElement, material: SCNMaterial
     private let skin: [(Int, Int, Float)]
     private var bones: [Bone]
@@ -38,22 +38,32 @@ final class HandModel {
     /// thumb reaches the stick and face buttons (tools/handfit).
     typealias Placement = (pos: SIMD3<Float>, rot: simd_quatf)
     static var place: [HeadsetModel: Placement] = [
-        .quest1: (SIMD3(-0.0372, 0.0259, 0.0366), simd_quatf(vector: SIMD4(0.3609, 0.8524, 0.3353, 0.1752))),
+        .quest1: (SIMD3(-0.0460, -0.0186, 0.0227), simd_quatf(vector: SIMD4(0.1868, 0.9021, 0.3360, -0.1962))),   // placed by hand in the tuner
         .quest2: (SIMD3(-0.0413, 0.0163, 0.0278), simd_quatf(vector: SIMD4(0.1946, 0.8872, 0.3815, 0.1718))),
         .quest3: (SIMD3(-0.0394, 0.0080, -0.0012), simd_quatf(vector: SIMD4(0.0995, 0.9100, 0.3848, 0.1184))),
     ]
     /// Placements saved from the hand tuner (Application Support/VR4Mac/hand-placement.json) override the built-ins.
     static let savedURL = appSupport.appendingPathComponent("hand-placement.json")
+    /// Manual per-bone adjustments from the tuner (radians about each joint's hinge, added after the automatic pose):
+    /// 15 per controller mesh, pinky/ring/middle/index/thumb x knuckle/middle/tip.
+    static var boneOffsets: [HeadsetModel: [Float]] = [:]
+    /// Look: fill RGB, edge RGB, fill opacity, edge opacity, edge width (0-1).
+    static var look: [Float] = [0.17, 0.18, 0.2, 0.78, 0.8, 0.83, 0.68, 0.85, 0.5]
+    private static let modelKeys: [String: HeadsetModel] = ["quest1": .quest1, "quest2": .quest2, "quest3": .quest3]
     static func loadSaved() {
         guard let d = try? Data(contentsOf: savedURL), let j = try? JSONSerialization.jsonObject(with: d) as? [String: [Float]] else { return }
-        for (k, v) in j where v.count == 7 {
-            guard let m = ["quest1": HeadsetModel.quest1, "quest2": .quest2, "quest3": .quest3][k] else { continue }
-            place[m] = (SIMD3(v[0], v[1], v[2]), simd_normalize(simd_quatf(vector: SIMD4(v[3], v[4], v[5], v[6]))))
+        for (k, v) in j {
+            if v.count == 7, let m = modelKeys[k] { place[m] = (SIMD3(v[0], v[1], v[2]), simd_normalize(simd_quatf(vector: SIMD4(v[3], v[4], v[5], v[6])))) }
+            if v.count == 15, k.hasPrefix("bones_"), let m = modelKeys[String(k.dropFirst(6))] { boneOffsets[m] = v }
+            if k == "look", v.count == look.count { look = v }
         }
     }
     static func save() {
-        var j: [String: [Float]] = [:]
-        for (m, p) in place { j[["quest1", "quest2", "quest3", "frame"][m.rawValue]] = [p.pos.x, p.pos.y, p.pos.z, p.rot.vector.x, p.rot.vector.y, p.rot.vector.z, p.rot.vector.w] }
+        var j: [String: [Float]] = ["look": look]
+        for (k, m) in modelKeys {
+            if let p = place[m] { j[k] = [p.pos.x, p.pos.y, p.pos.z, p.rot.vector.x, p.rot.vector.y, p.rot.vector.z, p.rot.vector.w] }
+            if let b = boneOffsets[m] { j["bones_" + k] = b }
+        }
         try? JSONSerialization.data(withJSONObject: j, options: [.prettyPrinted, .sortedKeys]).write(to: savedURL)
     }
     private static let loaded: Void = loadSaved()
@@ -81,6 +91,7 @@ final class HandModel {
         guard let (verts, faces) = HandModel.load() else { return nil }
         _ = HandModel.loaded
         left = hand == 0
+        meshModel = model.controllerMesh
         let m = left ? SIMD3<Float>(1, 1, 1) : SIMD3<Float>(-1, 1, 1)   // right hand: mirror the left mesh
         rest = verts.map { $0 * m }
         var idx: [Int32] = []
@@ -139,15 +150,21 @@ final class HandModel {
         material.blendMode = .alpha
         material.transparencyMode = .singleLayer
         if !debugColors { material.shaderModifiers = [.fragment: """
+            #pragma arguments
+            float3 fillRGB;
+            float3 edgeRGB;
+            float fillA;
+            float edgeA;
+            float edgeW;
             #pragma transparent
             #pragma body
             // Horizon OS hands: smoky dark glass with a thin light outline at the silhouette
             float rim = 1.0 - abs(dot(normalize(_surface.normal), normalize(_surface.view)));
-            float edge = smoothstep(0.9, 0.99, rim);
-            float a = _surface.diffuse.a * mix(0.68, 0.85, edge);   // palm nearly as solid as the fingers
-            float3 c = mix(float3(0.17, 0.18, 0.2), float3(0.78, 0.8, 0.83), edge);
+            float edge = smoothstep(1.0 - 0.2 * edgeW, 1.0 - 0.02 * edgeW, rim);
+            float a = _surface.diffuse.a * mix(fillA, edgeA, edge);
+            float3 c = mix(fillRGB, edgeRGB, edge);
             _output.color = float4(c * a, a);
-            """] }
+            """]; applyLook() }
         let pl = HandModel.place[model.controllerMesh] ?? HandModel.place[.quest2]!
         let v = pl.rot.vector   // mirrored across grip x for the right hand
         node.simdOrientation = left ? pl.rot : simd_quatf(vector: SIMD4(v.x, -v.y, -v.z, v.w))
@@ -156,6 +173,15 @@ final class HandModel {
         node.castsShadow = false
         if let controller { fitGrasp(controller) }
         apply()
+    }
+
+    /// Pushes HandModel.look into the shader (the tuner calls it on live changes).
+    func applyLook() {
+        let l = HandModel.look
+        material.setValue(NSValue(scnVector3: SCNVector3(l[0], l[1], l[2])), forKey: "fillRGB")
+        material.setValue(NSValue(scnVector3: SCNVector3(l[3], l[4], l[5])), forKey: "edgeRGB")
+        material.setValue(NSNumber(value: l[6]), forKey: "fillA"); material.setValue(NSNumber(value: l[7]), forKey: "edgeA")
+        material.setValue(NSNumber(value: l[8]), forKey: "edgeW")
     }
 
     // MARK: pose
@@ -266,6 +292,9 @@ final class HandModel {
                 else { thumb = t.rest + SIMD3(0, 0.014, 0.004) }   // resting flat just above the face
                 let touching = b & UInt32(VR4_BTN_A | VR4_BTN_B | VR4_BTN_X | VR4_BTN_Y | VR4_BTN_STICK_TOUCH | VR4_BTN_STICK_CLICK | VR4_BTN_THUMB_TOUCH) != 0 || poke
                 reach(touching ? [13, 14, 15] : [13, 14], tip: joints[4][3], mesh(thumb))   // not touching: a flat thumb (straight tip joint)
+            }
+            if let off = HandModel.boneOffsets[meshModel] {   // manual tweaks from the tuner, about each joint's hinge
+                for (i, a) in off.enumerated() where a != 0 && i + 1 < bones.count { bones[i + 1].q = simd_quatf(angle: a, axis: bones[i + 1].axis) * bones[i + 1].q }
             }
             target = bones.map(\.q)
         }
