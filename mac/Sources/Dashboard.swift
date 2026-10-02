@@ -90,7 +90,48 @@ final class Dashboard {
     private var toast = "", toastUntil = Date.distantPast
     private var notices: [(Date, String)] = [], unread = 0
     private let settings: Settings, games: Games
-    private let ctx: CGContext
+    private var ctx: CGContext
+    private let mainCtx: CGContext
+    // MARK: multitasking (Quest style): up to three windows. The centre one is `view`; the side slots keep their own view
+    // and canvas (window part only, W x SPLIT) and are fully usable: input on a side panel runs with that view swapped in.
+    private(set) var sideViews: [String?] = [nil, nil]   // left, right
+    private var sideRegions: [[Region]] = [[], []], sideCtxs: [CGContext?] = [nil, nil]
+    private var drawingSlot = 1, hoverSlot = 1, inputSlot = 1
+    /// A newly opened app replaced the centre window (the Compositor makes it hop).
+    var windowJump: () -> Void = {}
+    func sideContext(_ i: Int) -> CGContext? { sideViews[i] == nil ? nil : sideCtxs[i] }
+    private func sideCtx(_ i: Int) -> CGContext {
+        if let c = sideCtxs[i] { return c }
+        let c = CGContext(data: nil, width: Dashboard.W, height: Dashboard.SPLIT, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                          bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)!
+        c.translateBy(x: 0, y: CGFloat(Dashboard.SPLIT)); c.scaleBy(x: 1, y: -1)
+        sideCtxs[i] = c
+        return c
+    }
+    /// Runs input for slot 0 (left), 1 (centre/main canvas) or 2 (right) with that window's view swapped in.
+    func inSlot<T>(_ slot: Int, _ body: () -> T) -> T {
+        inputSlot = slot
+        defer { inputSlot = 1 }
+        let i = slot == 0 ? 0 : 1
+        guard slot != 1, let v = sideViews[i] else { return body() }
+        let saved = (view, windowOpen)
+        view = v
+        let r = body()
+        sideViews[i] = windowOpen ? view : nil   // its close button empties the slot
+        view = saved.0; windowOpen = saved.1
+        return r
+    }
+    /// A window dragged from one slot to another: the two slots swap windows (an empty centre closes the main window).
+    func moveWindow(from a: Int, to b: Int) {
+        guard a != b else { return }
+        func get(_ k: Int) -> String? { k == 1 ? (windowOpen ? view : nil) : sideViews[k == 0 ? 0 : 1] }
+        let va = get(a), vb = get(b)
+        func set(_ k: Int, _ v: String?) {
+            if k == 1 { if let v { view = v; windowOpen = true } else { windowOpen = false } } else { sideViews[k == 0 ? 0 : 1] = v }
+        }
+        set(a, vb); set(b, va)
+        sounds.play("drop"); redraw()
+    }
     private let sounds = UISounds.shared
     private var query = "", kbShift = false, desktopKeyboard = false
     private var libScroll: CGFloat = 0, setScroll: CGFloat = 0, libMax: CGFloat = 0, setMax: CGFloat = 0, scrollTick: CGFloat = 0
@@ -103,6 +144,7 @@ final class Dashboard {
     private var pressed: (String, CFTimeInterval)?, inPress = false, navved = false
     private let solidLock = NSLock()
     private var solidState = (true, false, Dashboard.DOCK)   // (windowOpen, keyboardOpen, dock) as of the last draw
+    private var sideOpen = [false, false]
     /// Menu style (Settings > Universal Menu): "Quest" = compact OS dock + windows with a bottom title bar;
     /// otherwise the SteamVR-like wide bar with the title on top. Read once per draw.
     private var quest = true
@@ -114,9 +156,10 @@ final class Dashboard {
 
     init(settings: Settings, games: Games) {
         self.settings = settings; self.games = games
-        ctx = CGContext(data: nil, width: Dashboard.W, height: Dashboard.H, bitsPerComponent: 8, bytesPerRow: 0,
+        mainCtx = CGContext(data: nil, width: Dashboard.W, height: Dashboard.H, bitsPerComponent: 8, bytesPerRow: 0,
                         space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)!
-        ctx.translateBy(x: 0, y: CGFloat(Dashboard.H)); ctx.scaleBy(x: 1, y: -1)
+        mainCtx.translateBy(x: 0, y: CGFloat(Dashboard.H)); mainCtx.scaleBy(x: 1, y: -1)
+        ctx = mainCtx
     }
 
     func say(_ s: String) { sounds.play("error"); note(s, 3.5) }
@@ -139,12 +182,20 @@ final class Dashboard {
     func startTutorial() { step = 0; nameDraft = Dashboard.userName; view = "welcome"; sounds.play("welcome"); redraw() }
 
     // MARK: input (uv from the SceneKit hit test, origin top-left)
-    private func px(_ uv: CGPoint) -> CGPoint { CGPoint(x: uv.x * CGFloat(Dashboard.W), y: uv.y * CGFloat(Dashboard.H)) }
-    private func region(_ uv: CGPoint) -> Region? { let p = px(uv); return regions.last { $0.r.contains(p) } }
+    private func px(_ uv: CGPoint) -> CGPoint { CGPoint(x: uv.x * CGFloat(Dashboard.W), y: uv.y * CGFloat(inputSlot == 1 ? Dashboard.H : Dashboard.SPLIT)) }
+    private func region(_ uv: CGPoint) -> Region? {
+        let p = px(uv)
+        return (inputSlot == 1 ? regions : sideRegions[inputSlot == 0 ? 0 : 1]).last { $0.r.contains(p) }
+    }
 
     /// True where the menu is opaque (window, bars, dock, open keyboard); lasers pass through the transparent gaps.
     /// Called on the render queue (laser hit tests) while the menu draws on its own: reads a snapshot taken after each draw.
-    func solid(_ uv: CGPoint) -> Bool {
+    func solid(_ uv: CGPoint, slot: Int = 1) -> Bool {
+        if slot != 1 {   // a side window: its window and grab bar
+            let p = CGPoint(x: uv.x * CGFloat(Dashboard.W), y: uv.y * CGFloat(Dashboard.SPLIT))
+            solidLock.lock(); let open = sideOpen[slot == 0 ? 0 : 1]; solidLock.unlock()
+            return open && (Dashboard.WIN.contains(p) || Dashboard.GRAB.contains(p))
+        }
         let p = px(uv)
         solidLock.lock(); let (windowOpen, keyboardOpen, dock) = solidState; solidLock.unlock()
         return windowOpen && (Dashboard.WIN.contains(p) || Dashboard.GRAB.contains(p) || Dashboard.dotRect(Dashboard.GRAB).contains(p))
@@ -157,9 +208,10 @@ final class Dashboard {
         let r = uv.flatMap { region($0) }
         if let uv, let r, r.id == "desktop", capture == nil, desktopTrusted { r.drag?(px(uv), 0); lastDesktopUV = uv }
         let id = r?.id
-        defer { hover = id }
-        if id != hover, id != nil, id != "desktop" { sounds.play("hover") }
-        return id != hover
+        let changed = id != hover || (id != nil && hoverSlot != inputSlot)
+        defer { hover = id; if id != nil { hoverSlot = inputSlot } }
+        if changed, id != nil, id != "desktop" { sounds.play("hover") }
+        return changed
     }
     /// Trigger pressed. Buttons fire immediately; sliders and the desktop capture the drag; grab bars move panels.
     @discardableResult func press(_ uv: CGPoint) -> Press {
@@ -232,7 +284,11 @@ final class Dashboard {
         menuFor = nil
         switch id {
         case "power": power()
-        default: if view != id { view = id; if inPress { navved = true } else { sounds.play("pop") } }
+        default:
+            if view != id {
+                if quest && windowOpen && inputSlot == 1 && !["welcome", "keyboard"].contains(view) { windowJump() }   // replaces the centre window
+                view = id; if inPress { navved = true } else { sounds.play("pop") }
+            }
         }
         if id == "notifications" { unread = 0 }
         redraw()
@@ -241,10 +297,10 @@ final class Dashboard {
     // MARK: drawing helpers
     @discardableResult
     private func btn(_ id: String, _ r: CGRect, _ fn: @escaping () -> Void) -> Bool {
-        regions.append(Region(id: id, r: r, fn: fn, drag: nil)); return hover == id
+        regions.append(Region(id: id, r: r, fn: fn, drag: nil)); return hover == id && hoverSlot == drawingSlot
     }
     private func dragRegion(_ id: String, _ r: CGRect, _ d: @escaping (CGPoint, Int) -> Void) -> Bool {
-        regions.append(Region(id: id, r: r, fn: nil, drag: d)); return hover == id || capture?.id == id
+        regions.append(Region(id: id, r: r, fn: nil, drag: d)); return hover == id && hoverSlot == drawingSlot || capture?.id == id
     }
     private func path(_ r: CGRect, _ rad: CGFloat) -> CGPath {
         CGPath(roundedRect: r, cornerWidth: min(rad, r.width / 2), cornerHeight: min(rad, r.height / 2), transform: nil)
@@ -1294,7 +1350,7 @@ final class Dashboard {
     }
 
     func testTourStep(_ n: Int) { view = "welcome"; step = n; redraw() }
-    var context: CGContext { ctx }
+    var context: CGContext { mainCtx }
     // test support (headless interaction verification)
     var testQuery: String { query }
     func testRegionCount() -> Int { regions.count }
@@ -1304,8 +1360,30 @@ final class Dashboard {
         regions.last { $0.id == id }.map { CGPoint(x: ($0.r.minX + $0.r.width * fx) / CGFloat(Dashboard.W), y: $0.r.midY / CGFloat(Dashboard.H)) }
     }
 
+    /// The side windows, each into its own canvas with its own hit regions.
+    private func drawSides() {
+        let saved = (view, windowOpen, regions)
+        for i in 0..<2 {
+            guard let v = sideViews[i] else { continue }
+            ctx = sideCtx(i); regions = []; drawingSlot = i == 0 ? 0 : 2; view = v
+            ctx.clear(CGRect(x: 0, y: 0, width: Dashboard.W, height: Dashboard.SPLIT))
+            chrome()
+            switch view {
+            case "playing": drawPlaying()
+            case "desktop": drawDesktop()
+            case "quick": drawQuickQuest()
+            case "settings": drawSettings()
+            case "notifications": drawNotifications()
+            case "appsettings": drawAppSettings()
+            default: drawLibrary()
+            }
+            sideRegions[i] = regions; sideViews[i] = view
+        }
+        ctx = mainCtx; drawingSlot = 1; view = saved.0; windowOpen = saved.1; regions = saved.2
+    }
     func draw() {
-        defer { solidLock.lock(); solidState = (windowOpen, keyboardOpen, dockRect); solidLock.unlock() }
+        defer { solidLock.lock(); solidState = (windowOpen, keyboardOpen, dockRect); sideOpen = sideViews.map { $0 != nil }; solidLock.unlock() }
+        defer { if quest { drawSides() } else { sideViews = [nil, nil] } }
         regions = []
         quest = settings["menu_style"] != "SteamVR"
         ctx.clear(CGRect(x: 0, y: 0, width: Dashboard.W, height: Dashboard.H))

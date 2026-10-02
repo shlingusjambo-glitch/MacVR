@@ -49,6 +49,16 @@ final class HandModel {
     static var boneOffsets: [HeadsetModel: [Float]] = [   // tuned by hand in the tuner
         .quest1: [0.8552, -1.2043, -1.2043, 0.6109, -0.6109, 0.2443, 0.1396, 0.1745, -0.1396, 0, 0, 0, 0, 0, 0],
     ]
+    /// Whole-controller calibration (left hand; mirrored for the right): mm offset and degrees X, Y, Z in grip space,
+    /// so the drawn controller and hand line up with the real ones.
+    static var gripOffset: [Float] = [0, 0, 0, 0, 0, 0]
+    static var gripMatrix: (left: simd_float4x4, right: simd_float4x4) {
+        let o = gripOffset, d = Float.pi / 180
+        let q = simd_quatf(angle: o[3] * d, axis: SIMD3(1, 0, 0)) * simd_quatf(angle: o[4] * d, axis: SIMD3(0, 1, 0)) * simd_quatf(angle: o[5] * d, axis: SIMD3(0, 0, 1))
+        var l = simd_float4x4(q); l.columns.3 = SIMD4(o[0] / 1000, o[1] / 1000, o[2] / 1000, 1)
+        let m = simd_float4x4(diagonal: SIMD4(-1, 1, 1, 1))
+        return (l, m * l * m)
+    }
     /// Look: fill RGB, edge RGB, fill opacity, edge opacity, edge width (0-1).
     static var look: [Float] = [0.17, 0.18, 0.2, 0.78, 0.8, 0.83, 0.68, 0.85, 0.5]
     private static let modelKeys: [String: HeadsetModel] = ["quest1": .quest1, "quest2": .quest2, "quest3": .quest3]
@@ -58,10 +68,11 @@ final class HandModel {
             if v.count == 7, let m = modelKeys[k] { place[m] = (SIMD3(v[0], v[1], v[2]), simd_normalize(simd_quatf(vector: SIMD4(v[3], v[4], v[5], v[6])))) }
             if v.count == 15, k.hasPrefix("bones_"), let m = modelKeys[String(k.dropFirst(6))] { boneOffsets[m] = v }
             if k == "look", v.count == look.count { look = v }
+            if k == "grip", v.count == 6 { gripOffset = v }
         }
     }
     static func save() {
-        var j: [String: [Float]] = ["look": look]
+        var j: [String: [Float]] = ["look": look, "grip": gripOffset]
         for (k, m) in modelKeys {
             if let p = place[m] { j[k] = [p.pos.x, p.pos.y, p.pos.z, p.rot.vector.x, p.rot.vector.y, p.rot.vector.z, p.rot.vector.w] }
             if let b = boneOffsets[m] { j["bones_" + k] = b }

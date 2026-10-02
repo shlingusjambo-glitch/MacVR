@@ -124,6 +124,7 @@ final class Engine: ObservableObject {
         tuner.model = { [weak self] in self?.comp.shownControllerModel ?? .quest2 }
         tuner.start()
         games.onUpdate = { [weak self] in self?.requestDraw() }
+        dash.windowJump = { [weak self] in self?.rq.async { self?.comp.jump() } }
         dash.launch = { [weak self] g in
             guard let self else { return }
             // per-game overrides for the runtime (0 = default): render resolution and world scale
@@ -253,12 +254,14 @@ final class Engine: ObservableObject {
                 drawScheduled = false
                 dash.draw()
                 let tex = comp.uploadDashboard(dash.context), v = dash.view, r = dash.desktopRect, kb = dash.keyboardOpen
+                let sideTex = (0..<2).map { i in dash.sideContext(i).flatMap { comp.uploadSide(i, $0) } }
                 let wo = dash.windowOpen
                 let touring = v == "welcome", finalStep = dash.tourFinalStep, tourPart = dash.tourPart, hs = dash.headset
                 dash.liveTourController = true
                 if dash.animatingUntil > CACurrentMediaTime() { dq.asyncAfter(deadline: .now() + .milliseconds(16)) { self.requestDraw() } }
                 rq.async { [self] in
                     comp.setDashboard(tex)
+                    for i in 0..<2 { comp.setSide(i, sideTex[i]) }
                     if v != dashView && dashVisible && !(v == "keyboard" && dashView == "library") { comp.pop(dock: false) }   // new window pops up
                     if wo && !windowShown && dashVisible { comp.pop(dock: false) }   // reopened from the dock
                     windowShown = wo; comp.setWindowHidden(!wo)
@@ -447,15 +450,15 @@ final class Engine: ObservableObject {
 
     /// Laser pointers on the menu: trigger press/hold/release, grip = secondary, stick = scroll.
     private func lasers(_ t: VR4Tracking, _ hs: [VR4Hand], _ valid: [Bool], _ trig: [Bool], _ grip: [Bool], _ rays: inout [Float?], _ poke: [Bool]) {
-        var hits: [(uv: CGPoint, dist: Float)?] = [nil, nil]
+        var hits: [(uv: CGPoint, dist: Float, slot: Int)?] = [nil, nil]
         for i in 0..<2 where valid[i] && !poke[i] {
-            if let h = comp.hit(hs[i].aim, solid: dash.solid) { hits[i] = h; rays[i] = h.dist }
+            if let h = comp.hit(hs[i].aim, solid: { self.dash.solid($0, slot: $1) }) { hits[i] = h; rays[i] = h.dist }
         }
         if !trig[activeHand] {   // the hand that pulls the trigger (or the only one pointing at the menu) drives it
             if let i = (0..<2).first(where: { hits[$0] != nil && trig[$0] && !prevTrigger[$0] }) { activeHand = i }
             else if hits[activeHand] == nil, let i = (0..<2).first(where: { hits[$0] != nil }) { activeHand = i }
         }
-        let a = activeHand, uv = hits[a]?.uv, dist = hits[a]?.dist, aim = hs[a].aim, head = t.head
+        let a = activeHand, uv = hits[a]?.uv, dist = hits[a]?.dist, aim = hs[a].aim, head = t.head, slot = hits[a]?.slot ?? 1
         let down = trig[a] && !prevTrigger[a], held = trig[a] && prevTrigger[a], up = !trig[a] && prevTrigger[a]
         let secondary = grip[a] && !prevGrip[a], stick = grabHand == nil ? hs[a].stick_y : 0
         if grabHand == nil, dashView == "desktop", abs(hs[a].stick_x) > 0.5, hits[a] != nil {
@@ -464,21 +467,23 @@ final class Engine: ObservableObject {
         dq.async { [self] in
             var changed = false
             if down, let uv {
-                let p = dash.press(uv)
+                laserSlot = slot
+                let p = dash.inSlot(slot) { dash.press(uv) }
                 if p == .grabWindow || p == .grabDock || p == .grabKeyboard, let dist {
                     dash.grabbing = p == .grabWindow ? "grab" : p == .grabDock ? "grabdock" : "grabkb"
                     let part: Compositor.Part = p == .grabWindow ? .window : p == .grabDock ? .dock : .keyboard
-                    rq.async { self.grabHand = a; self.comp.beginGrab(part, aim, dist: dist, head: head) }
+                    rq.async { self.grabHand = a; self.comp.beginGrab(part, aim, dist: dist, head: head, slot: slot) }
                 }
                 changed = true
-            } else if held, let uv { dash.drag(uv) }
-            if up { dash.release(uv); changed = true }
-            if secondary, let uv { dash.secondary(uv) }
-            if abs(stick) > 0.2, let uv, dash.scroll(stick, at: uv) { changed = true }
-            if dash.pointer(uv) { changed = true; if uv != nil { haptic(a, 0.25, 0.015) } }
+            } else if held, let uv { dash.inSlot(laserSlot) { dash.drag(uv) } }
+            if up { dash.inSlot(laserSlot) { dash.release(uv) }; changed = true }
+            if secondary, let uv { dash.inSlot(slot) { dash.secondary(uv) } }
+            if abs(stick) > 0.2, let uv, dash.inSlot(slot, { dash.scroll(stick, at: uv) }) { changed = true }
+            if dash.inSlot(slot, { dash.pointer(uv) }) { changed = true; if uv != nil { haptic(a, 0.25, 0.015) } }
             if changed { requestDraw() }
         }
     }
+    private var laserSlot = 1, touchSlot = [1, 1]   // dashboard queue: the window a press started in
 
     private func frame(_ t: VR4Tracking) {
         lastTrack = t
@@ -520,11 +525,14 @@ final class Engine: ObservableObject {
                         haptic(g, 0.8, 0.04); UISounds.shared.play("drop")   // hit the distance stop: it sticks here
                     }
                 }
-                else { grabHand = nil; comp.endGrab(); UISounds.shared.play("drop"); dq.async { [self] in dash.grabbing = nil; requestDraw() } }
+                else {
+                    grabHand = nil; let moved = comp.endGrab(); UISounds.shared.play("drop")
+                    dq.async { [self] in dash.grabbing = nil; if let (a, b) = moved { dash.moveWindow(from: a, to: b) }; requestDraw() }
+                }
             }
             // direct touch: the fingertip pad presses when it reaches the surface and re-arms once lifted ~1 cm (taps type
             // fast); the hand stays on the surface unless pushed 6 cm through; while pressed, sliding drags.
-            var touchUV: CGPoint?
+            var touchUV: CGPoint?, touchUVSlot = 1
             for i in 0..<2 where directTouch {
                 let tc = valid[i] ? comp.touch(i, grip: hs[i].grip) : nil
                 let onMenu = tc.map { dash.solid($0.uv) } ?? false, d = onMenu ? tc!.depth : 1
@@ -533,18 +541,19 @@ final class Engine: ObservableObject {
                 let wasDown = touchDown[i]
                 touchDown[i] = poke[i] && d > -0.06 && (wasDown ? d < 0.012 : d <= 0.003 && touchDepth[i] > 0.003)
                 touchDepth[i] = touchDown[i] ? min(touchDepth[i], d) : d
-                guard onMenu, let uv = tc?.uv else { if wasDown { dq.async { [self] in dash.touchUp(nil); requestDraw() } }; continue }
-                if poke[i] && d < 0.05 { touchUV = uv; rays[i] = nil }
+                guard onMenu, let uv = tc?.uv else { if wasDown { dq.async { [self] in dash.inSlot(touchSlot[i]) { dash.touchUp(nil) }; requestDraw() } }; continue }
+                let ts = tc!.slot
+                if poke[i] && d < 0.05 { touchUV = uv; touchUVSlot = ts; rays[i] = nil }
                 if touchDown[i] && !wasDown {   // landed: light the control (sliders start moving)
                     haptic(i, 0.3, 0.012)
-                    dq.async { [self] in dash.touchDown(uv); requestDraw() }
-                } else if touchDown[i] { dq.async { [self] in dash.drag(uv) } }
+                    dq.async { [self] in touchSlot[i] = ts; dash.inSlot(ts) { dash.touchDown(uv) }; requestDraw() }
+                } else if touchDown[i] { dq.async { [self] in dash.inSlot(touchSlot[i]) { dash.drag(uv) } } }
                 else if wasDown {               // lifted: that's the click
                     haptic(i, 0.5, 0.02)
-                    dq.async { [self] in dash.touchUp(uv); requestDraw() }
+                    dq.async { [self] in dash.inSlot(touchSlot[i]) { dash.touchUp(uv) }; requestDraw() }
                 }
             }
-            if let uv = touchUV { dq.async { [self] in if dash.pointer(uv) { requestDraw() } } }   // a finger at the menu drives it
+            if let uv = touchUV { let ts = touchUVSlot; dq.async { [self] in if dash.inSlot(ts, { dash.pointer(uv) }) { requestDraw() } } }   // a finger at the menu drives it
             if touchUV == nil || grabHand != nil { lasers(t, hs, valid, trig, grip, &rays, poke) }
         }
         for i in 0..<2 { prevTrigger[i] = trig[i]; prevGrip[i] = grip[i] }

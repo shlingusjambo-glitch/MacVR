@@ -94,6 +94,7 @@ final class Compositor {
         key.eulerAngles = SCNVector3(-0.9, 0.4, 0); scene.rootNode.addChildNode(key)
         dash.addChildNode(win); win.addChildNode(winContent); winContent.addChildNode(panel); winContent.addChildNode(screen)
         dash.addChildNode(dockNode); dockNode.addChildNode(dockPanel)
+        sides.forEach { dash.addChildNode($0); $0.isHidden = true }
         dash.addChildNode(kbNode); kbNode.addChildNode(kbPanel); kbNode.isHidden = true
         scene.rootNode.addChildNode(dash)
 
@@ -178,6 +179,13 @@ final class Compositor {
         let L = layout
         bend = [ObjectIdentifier(panel): r / L.win, ObjectIdentifier(dockPanel): (r - L.dockZ) / L.dock, ObjectIdentifier(kbPanel): (r - L.kbZ) / L.kb]
         panel.geometry = Compositor.bent(w: w, h: h * sp, r: r / L.win, v0: 0, v1: CGFloat(sp))
+        for n in sides {   // side windows: their own window-only canvases (full uv)
+            let old = n.geometry?.firstMaterial?.diffuse.contents
+            n.geometry = Compositor.bent(w: w, h: h * sp, r: r / L.win)
+            if let mat = n.geometry?.firstMaterial { mat.diffuse.contents = old; mat.blendMode = .alpha; mat.writesToDepthBuffer = false; mat.diffuse.mipFilter = .linear; mat.diffuse.maxAnisotropy = 16 }
+            n.renderingOrder = 10
+            bend[ObjectIdentifier(n)] = r / L.win
+        }
         dockPanel.geometry = Compositor.bent(w: w, h: h * (sp2 - sp), r: (r - L.dockZ) / L.dock, v0: CGFloat(sp), v1: CGFloat(sp2))
         kbPanel.geometry = Compositor.bent(w: w, h: h * (1 - sp2), r: (r - L.kbZ) / L.kb, v0: CGFloat(sp2), v1: 1)
         for n in [panel, dockPanel, kbPanel] {   // the menu texture has transparent gaps around the window, bars and dock
@@ -218,6 +226,7 @@ final class Compositor {
             kbNode.simdPosition = SIMD3(0, winBottom - (compact ? 0.2 : 0.27) * radius / 0.95, L.kbZ)
             kbNode.simdEulerAngles = SIMD3(compact ? -0.5 : -0.6, 0, 0)   // compact: tilted toward the fingers for typing
             kbNode.simdScale = SIMD3(repeating: L.kb)
+            layoutSides()
             return
         }
         win.simdPosition = SIMD3(0, 0.12, 0)
@@ -403,6 +412,21 @@ final class Compositor {
         }
         return dashTex[dashIdx]
     }
+    private var sideTex: [[MTLTexture]] = [[], []], sideIdx = [0, 0]   // dashboard queue only
+    /// Side window canvases, like uploadDashboard (double-buffered, mipmapped).
+    func uploadSide(_ i: Int, _ ctx: CGContext) -> MTLTexture? {
+        if sideTex[i].isEmpty {
+            let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm_srgb, width: ctx.width, height: ctx.height, mipmapped: true)
+            d.usage = .shaderRead; d.storageMode = .shared
+            sideTex[i] = (0..<2).compactMap { _ in device.makeTexture(descriptor: d) }
+        }
+        guard let data = ctx.data, sideTex[i].count == 2 else { return nil }
+        sideIdx[i] ^= 1
+        let t = sideTex[i][sideIdx[i]]
+        t.replace(region: MTLRegionMake2D(0, 0, ctx.width, ctx.height), mipmapLevel: 0, withBytes: data, bytesPerRow: ctx.bytesPerRow)
+        if let cb = dashQueue?.makeCommandBuffer(), let blit = cb.makeBlitCommandEncoder() { blit.generateMipmaps(for: t); blit.endEncoding(); cb.commit(); cb.waitUntilCompleted() }
+        return t
+    }
     private var gridOn = true
     func setGrid(_ on: Bool) { gridOn = on; grid.isHidden = !on || !voidEnv || scene.background.contents == nil }
 
@@ -419,14 +443,16 @@ final class Compositor {
     private func node(_ p: Part) -> SCNNode { p == .window ? win : p == .dock ? dockNode : kbNode }
     private func horizontal(_ a: SIMD3<Float>, _ b: SIMD3<Float>) -> Float { simd_length(SIMD2(a.x - b.x, a.z - b.z)) }
     /// Start dragging `part` at the ray's current hit.
-    func beginGrab(_ part: Part, _ aim: VR4Pose, dist: Float, head: VR4Pose) {
+    private var grabSlot = 1
+    func beginGrab(_ part: Part, _ aim: VR4Pose, dist: Float, head: VR4Pose, slot: Int = 1) {
+        grabSlot = slot
         let (o, d) = ray(aim), n = node(part)
         grabPart = part; grabDist0 = dist; grabDist = dist; grabScale = n.simdScale.x; grabPush = 0; atStop = false
         handDist0 = horizontal(o, SIMD3(head.px, head.py, head.pz))
         grabLocal = n.simdConvertPosition(o + d * dist, from: nil)
         grabRot0 = n.simdWorldOrientation; grabStart = CACurrentMediaTime()
         carried = part == .dock ? [win, kbNode].map { ($0, n.simdWorldTransform.inverse * $0.simdWorldTransform) } : []
-        if part == .window && questLayout { beginSlots(head: head, aim: aim) }
+        if part == .window && questLayout { beginSlots(slot: grabSlot, aim: aim) }
     }
     private var grabRot0 = simd_quatf(angle: 0, axis: SIMD3(0, 1, 0)), grabStart: CFTimeInterval = 0
     /// The grabbed point stays on the ray at the distance it was grabbed, facing the head. SteamVR style: moving the
@@ -461,71 +487,99 @@ final class Compositor {
         for (c, rel) in carried { c.simdWorldTransform = n.simdWorldTransform * rel }
         return hit
     }
-    func endGrab() { if grabPart == .window && questLayout { endSlots() } }
+    /// Ends a drag; for a Quest window returns (from slot, to slot) so the windows can be swapped.
+    @discardableResult func endGrab() -> (Int, Int)? { grabPart == .window && questLayout ? endSlots() : nil }
 
-    // MARK: multitasking (Quest style): an app window being dragged slides left/right around you across three slots
-    // shown as transparent window-sized frames inside one wide transparent band; on release it glides into the nearest.
+    // MARK: multitasking (Quest style): three window slots side by side around you (left, centre, right), in dash space.
+    // Dragging a window by its bar slides it left/right across the slots (a transparent band with three frames shows
+    // while dragging); on release it settles into the nearest slot and swaps with whatever was there.
+    let sides = [SCNNode(), SCNNode()]   // left, right window panels (centre is `win`)
     private let slotsNode = SCNNode()
-    private var slotCenter: SIMD3<Float> = .zero, slotR: Float = 1, slotY: Float = 0, slotYaw0: Float = 0, slotStep: Float = 0
-    private var slotTilt = simd_quatf(angle: 0, axis: SIMD3(1, 0, 0)), rayYaw0: Float = 0, winYaw: Float = 0
-    private var snapFrom: Float = 0, snapTo: Float = 0, snapStart: CFTimeInterval = 0, snapping = false
-    private func yawAround(_ p: SIMD3<Float>) -> Float { atan2(p.x - slotCenter.x, p.z - slotCenter.z) }
-    private func beginSlots(head: VR4Pose, aim: VR4Pose) {
-        slotCenter = SIMD3(head.px, head.py, head.pz)
-        let w = win.simdWorldPosition
-        slotR = max(0.4, horizontal(w, slotCenter)); slotY = w.y
-        winYaw = yawAround(w); slotYaw0 = atan2(-sin(dash.simdEulerAngles.y) * 0 + (dash.simdWorldPosition.x - slotCenter.x), dash.simdWorldPosition.z - slotCenter.z)
-        let width = Float(Dashboard.WIN.width) * metersPerPx * win.simdScale.x
-        slotStep = (width + 0.06) / slotR
-        let face = simd_quatf(angle: winYaw + .pi, axis: SIMD3(0, 1, 0))   // facing the head
-        slotTilt = face.inverse * win.simdWorldOrientation
-        let (o, d) = ray(aim); _ = o; rayYaw0 = atan2(d.x, d.z)
-        // the band and its three frames, bent around you at the window's distance
+    private var headLocal = SIMD3<Float>(0, 0.1, 1)   // the head in dash space at the last placement
+    private var dragSlot = 1, dragAngle: Float = 0, rayYaw0: Float = 0
+    private var settle: (node: SCNNode, from: simd_float4x4, to: simd_float4x4, start: CFTimeInterval)?
+    /// Window panel (and its home transform) for slot 0 left, 1 centre, 2 right.
+    private func slotNode(_ k: Int) -> SCNNode { k == 1 ? win : sides[k == 0 ? 0 : 1] }
+    private var slotStep: Float {
+        let w = Float(Dashboard.WIN.width) * metersPerPx * layout.win
+        return (w + 0.05) / max(0.3, simd_length(SIMD2(headLocal.x, headLocal.z)))   // window width + gap, as an angle
+    }
+    /// Home transform of slot k: the centre window's transform turned about the head's vertical axis.
+    private func slotTransform(_ k: Int, angle extra: Float = 0) -> simd_float4x4 {
+        let a = Float(1 - k) * slotStep + extra   // left slot is to the left (+ yaw)
+        var t = matrix_identity_float4x4; t.columns.3 = SIMD4(headLocal, 1)
+        var ti = matrix_identity_float4x4; ti.columns.3 = SIMD4(-headLocal, 1)
+        var base = matrix_identity_float4x4   // the centre window's home (resetLayout)
+        base.columns.3 = SIMD4(0, 0.08, 0, 1)
+        let sc = layout.win
+        base.columns.0 *= sc; base.columns.1 *= sc; base.columns.2 *= sc
+        return t * simd_float4x4(simd_quatf(angle: a, axis: SIMD3(0, 1, 0))) * ti * base
+    }
+    private func layoutSides() {
+        guard questLayout else { sides.forEach { $0.isHidden = true }; return }
+        for k in [0, 2] { slotNode(k).simdTransform = slotTransform(k) }
+    }
+    /// Dashboard side canvases (nil = slot empty).
+    func setSide(_ i: Int, _ tex: MTLTexture?) {
+        sides[i].geometry?.firstMaterial?.diffuse.contents = tex
+        sides[i].isHidden = tex == nil || !questLayout
+    }
+    private func beginSlots(slot: Int, aim: VR4Pose) {
+        dragSlot = slot; dragAngle = 0
+        let (_, d) = ray(aim); rayYaw0 = atan2(d.x, d.z)
         slotsNode.childNodes.forEach { $0.removeFromParentNode() }
-        let h = Float(Dashboard.WIN.height) * metersPerPx * win.simdScale.x
+        let m = metersPerPx, w = Float(Dashboard.WIN.width) * m, h = Float(Dashboard.WIN.height) * m, r = radius / layout.win
         func frame(_ w: Float, _ h: Float, _ a: CGFloat) -> SCNNode {
-            let g = Compositor.bent(w: w, h: h, r: slotR, seg: 48)
+            let g = Compositor.bent(w: w, h: h, r: r, seg: 48)
             g.firstMaterial?.diffuse.contents = NSColor(white: 1, alpha: a); g.firstMaterial?.blendMode = .alpha
             g.firstMaterial?.writesToDepthBuffer = false; g.firstMaterial?.readsFromDepthBuffer = false
             let n = SCNNode(geometry: g); n.renderingOrder = 9; return n
         }
-        let band = frame(slotR * slotStep * 3 + 0.08, h + 0.08, 0.06)
-        band.simdPosition = SIMD3(sin(slotYaw0) * slotR, 0, cos(slotYaw0) * slotR) + SIMD3(slotCenter.x, slotY, slotCenter.z)
-        band.simdOrientation = simd_quatf(angle: slotYaw0 + .pi, axis: SIMD3(0, 1, 0)) * slotTilt
-        slotsNode.addChildNode(band)
-        for k in -1...1 {
-            let f = frame(width, h, 0.1), a = slotYaw0 + Float(k) * slotStep
-            f.simdPosition = SIMD3(sin(a) * slotR, 0, cos(a) * slotR) + SIMD3(slotCenter.x, slotY, slotCenter.z)
-            f.simdOrientation = simd_quatf(angle: a + .pi, axis: SIMD3(0, 1, 0)) * slotTilt
+        let ly = (Float(Dashboard.SPLIT) / 2 - Float(Dashboard.WIN.midY)) * m   // window rect centre inside the panel
+        for k in 0..<3 {   // three window-sized frames
+            let f = frame(w, h, 0.1); f.simdTransform = slotTransform(k); f.simdPosition += f.simdOrientation.act(SIMD3(0, ly, 0.002)) * layout.win
             slotsNode.addChildNode(f)
         }
-        if slotsNode.parent == nil { scene.rootNode.addChildNode(slotsNode) }
-        slotsNode.isHidden = false; slotsNode.opacity = 1; snapping = false
-    }
-    private func placeWindow(yaw: Float) {
-        winYaw = yaw
-        win.simdWorldPosition = SIMD3(slotCenter.x + sin(yaw) * slotR, slotY, slotCenter.z + cos(yaw) * slotR)
-        win.simdWorldOrientation = simd_quatf(angle: yaw + .pi, axis: SIMD3(0, 1, 0)) * slotTilt
+        let band = frame(w * 3 + 0.25 / layout.win, h + 0.08 / layout.win, 0.05)   // the wide band behind them
+        band.simdTransform = slotTransform(1); band.simdPosition += band.simdOrientation.act(SIMD3(0, ly, -0.002)) * layout.win
+        slotsNode.addChildNode(band)
+        if slotsNode.parent == nil { dash.addChildNode(slotsNode) }
+        slotsNode.isHidden = false; slotsNode.opacity = 1; settle = nil
     }
     private func updateSlots(_ aim: VR4Pose) {
         let (_, d) = ray(aim), rayYaw = atan2(d.x, d.z)
         var dy = rayYaw - rayYaw0
         if dy > .pi { dy -= 2 * .pi } else if dy < -.pi { dy += 2 * .pi }
         rayYaw0 = rayYaw
-        placeWindow(yaw: min(slotYaw0 + slotStep, max(slotYaw0 - slotStep, winYaw + dy * 1.4)))
+        let home = Float(1 - dragSlot) * slotStep
+        dragAngle = min(slotStep - home, max(-slotStep - home, dragAngle + dy * 1.4))   // stay within the band
+        slotNode(dragSlot).simdTransform = slotTransform(dragSlot, angle: dragAngle)
     }
-    private func endSlots() {
-        let k = ((winYaw - slotYaw0) / slotStep).rounded()
-        snapFrom = winYaw; snapTo = slotYaw0 + min(1, max(-1, k)) * slotStep; snapStart = CACurrentMediaTime(); snapping = true
+    /// Release: the slot it lands in. The panels stay bound to their slots, so the caller swaps the windows' contents;
+    /// the dragged panel snaps home and the target slot's panel glides in from where the window was let go.
+    private func endSlots() -> (Int, Int) {
+        let pos = Float(1 - dragSlot) * slotStep + dragAngle
+        let target = 1 - Int((pos / slotStep).rounded())
+        let to = min(2, max(0, target)), released = slotNode(dragSlot).simdTransform
+        slotNode(dragSlot).simdTransform = slotTransform(dragSlot)
+        settle = (slotNode(to), released, slotTransform(to), CACurrentMediaTime())
+        slotNode(to).simdTransform = released
+        return (dragSlot, to)
     }
-    /// Per frame: glide the released window into its slot (ease-out, 0.22 s) and fade the frames out.
+    /// Per frame: glide a released window into its slot (ease-out, 0.22 s), fade the frames, play the open "jump".
     private func tickSlots() {
-        guard snapping else { return }
-        let t = Float(min(1, (CACurrentMediaTime() - snapStart) / 0.22)), e = 1 - pow(1 - t, 3)
-        placeWindow(yaw: snapFrom + (snapTo - snapFrom) * e)
-        slotsNode.opacity = CGFloat(1 - t)
-        if t >= 1 { snapping = false; slotsNode.isHidden = true }
+        if let s = settle {
+            let t = Float(min(1, (CACurrentMediaTime() - s.start) / 0.22)), e = 1 - pow(1 - t, 3)
+            var m = s.from
+            for c in 0..<4 { m[c] = s.from[c] + (s.to[c] - s.from[c]) * e }
+            s.node.simdTransform = m
+            slotsNode.opacity = CGFloat(1 - t)
+            if t >= 1 { settle = nil; slotsNode.isHidden = true; layoutSides(); win.simdTransform = slotTransform(1) }
+        }
     }
+    private var jumpStart: CFTimeInterval = -10
+    /// A new app replaced the centre window: it hops.
+    func jump() { jumpStart = CACurrentMediaTime() }
 
     /// Thumbstick left/right on the Mac desktop: resize the window (bigger = more readable desktop text).
     func zoomWindow(_ d: Float) {
@@ -546,6 +600,11 @@ final class Compositor {
         winContent.simdPosition = SIMD3(0, -0.025 * (1 - e), 0)
         winContent.simdScale = SIMD3(repeating: 0.97 + 0.03 * e)
         winContent.opacity = CGFloat(e)
+        let j = Float((CACurrentMediaTime() - jumpStart) / 0.34)
+        if j >= 0 && j < 1 {   // a new app replaced the centre window: a quick hop up and back with a slight squash
+            winContent.simdPosition.y += 0.035 * sin(.pi * j) * (1 - j * 0.3)
+            winContent.simdScale *= 1 - 0.04 * sin(.pi * j)
+        }
         let de = popDock ? e : 1
         dockPanel.simdPosition = SIMD3(0, -0.015 * (1 - de), 0)
         dockPanel.simdScale = SIMD3(repeating: 0.98 + 0.02 * de)
@@ -573,6 +632,7 @@ final class Compositor {
         // Quest: lean the whole menu back so the window (below eye level) faces your eyes, not the horizon
         let pitch: Float = questLayout ? atan2(drop - 0.08, radius) : 0
         dash.simdOrientation = simd_quatf(angle: yaw, axis: SIMD3(0, 1, 0)) * simd_quatf(angle: -pitch, axis: SIMD3(1, 0, 0))
+        headLocal = dash.simdConvertPosition(SIMD3(head.px, head.py, head.pz), from: nil)
         resetLayout()
     }
 
@@ -690,32 +750,35 @@ final class Compositor {
     // MARK: input
     /// Ray from a hand's aim pose against the dashboard panel -> texture uv (origin top-left) + distance.
     /// Nearest hit on the window or dock panel. Their texture coords are already canvas uv (origin top-left).
-    func hit(_ aim: VR4Pose, solid: (CGPoint) -> Bool) -> (uv: CGPoint, dist: Float)? {
+    /// `slot`: 1 = the main canvas (centre window, dock, keyboard), 0 / 2 = the left / right window's own canvas.
+    func hit(_ aim: VR4Pose, solid: (CGPoint, Int) -> Bool) -> (uv: CGPoint, dist: Float, slot: Int)? {
         guard !dash.isHidden, panel.geometry != nil else { return nil }
         let (o, d) = ray(aim)
-        var best: (uv: CGPoint, dist: Float)?
-        for n in [panel, dockPanel, kbPanel] where !(n === kbPanel && kbNode.isHidden) {
+        var best: (uv: CGPoint, dist: Float, slot: Int)?
+        for (n, slot) in [(panel, 1), (dockPanel, 1), (kbPanel, 1), (sides[0], 0), (sides[1], 2)] where !(n === kbPanel && kbNode.isHidden) && !n.isHidden && !(n.parent?.isHidden ?? false) {
             let a = n.simdConvertPosition(o, from: nil), b = n.simdConvertPosition(o + d * 10, from: nil)
             for h in n.hitTestWithSegment(from: SCNVector3(a), to: SCNVector3(b), options: [SCNHitTestOption.backFaceCulling.rawValue: false]) {
                 let dist = simd_distance(o, h.simdWorldCoordinates), uv = h.textureCoordinates(withMappingChannel: 0)
-                if solid(uv), dist < best?.dist ?? .infinity { best = (uv, dist) }   // lasers pass through transparent gaps
+                if solid(uv, slot), dist < best?.dist ?? .infinity { best = (uv, dist, slot) }   // lasers pass through transparent gaps
             }
         }
         return best
     }
 
     // MARK: direct touch
-    struct Touch { let uv: CGPoint; let depth: Float; let normal: SIMD3<Float> }
+    struct Touch { let uv: CGPoint; let depth: Float; let normal: SIMD3<Float>; var slot = 1 }
     /// Where hand `i`'s index fingertip is against the menu: canvas uv, depth along the panel normal (metres, positive
     /// in front of it, negative pushed through) and the panel's outward normal. nil if not over a panel.
     func touch(_ i: Int, grip: VR4Pose) -> Touch? {
         guard !dash.isHidden, panel.geometry != nil, let hm = handModels[i] else { return nil }
         var g = simd_float4x4(simd_quatf(ix: grip.qx, iy: grip.qy, iz: grip.qz, r: grip.qw)); g.columns.3 = SIMD4(grip.px, grip.py, grip.pz, 1)
+        g = g * (i == 0 ? HandModel.gripMatrix.left : HandModel.gripMatrix.right)
         let tip4 = g * SIMD4(hm.indexTip, 1), tip = SIMD3(tip4.x, tip4.y, tip4.z)
         let m = metersPerPx, w = Float(Dashboard.W) * m, h = Float(Dashboard.H) * m, sp = Compositor.split, sp2 = Compositor.split2
         var best: Touch?
-        for (n, v0, v1) in [(panel, Float(0), sp), (dockPanel, sp, sp2), (kbPanel, sp2, Float(1))] where !(n === kbPanel && kbNode.isHidden) {
-            let p = n.simdConvertPosition(tip, from: nil), ph = h * (v1 - v0), r = bend[ObjectIdentifier(n)] ?? radius
+        for (n, v0, v1, slot) in [(panel, Float(0), sp, 1), (dockPanel, sp, sp2, 1), (kbPanel, sp2, Float(1), 1), (sides[0], Float(0), Float(1), 0), (sides[1], Float(0), Float(1), 2)]
+            where !(n === kbPanel && kbNode.isHidden) && !n.isHidden {
+            let p = n.simdConvertPosition(tip, from: nil), ph = slot == 1 ? h * (v1 - v0) : h * sp, r = bend[ObjectIdentifier(n)] ?? radius
             let a = Compositor.curved ? asin(max(-1, min(1, p.x / r))) : 0
             let zs = Compositor.curved ? r - r * cos(a) : 0
             let u = Compositor.curved ? a * r / w + 0.5 : p.x / w + 0.5, vl = 0.5 - p.y / ph
@@ -724,7 +787,7 @@ final class Compositor {
             let scale = simd_length(n.simdConvertVector(SIMD3(1, 0, 0), to: nil))
             let d = simd_dot(p - SIMD3(p.x, p.y, zs), nl) * scale
             guard d > -0.08, d < 0.15, abs(d) < abs(best?.depth ?? .infinity) else { continue }
-            best = Touch(uv: CGPoint(x: CGFloat(u), y: CGFloat(v0 + vl * (v1 - v0))), depth: d, normal: simd_normalize(n.simdConvertVector(nl, to: nil)))
+            best = Touch(uv: CGPoint(x: CGFloat(u), y: CGFloat(v0 + vl * (v1 - v0))), depth: d, normal: simd_normalize(n.simdConvertVector(nl, to: nil)), slot: slot)
         }
         return best
     }
@@ -739,7 +802,9 @@ final class Compositor {
             let valid = h.flags & UInt32(VR4_HAND_POSE_VALID) != 0
             let n = hands[i]
             n.grip.isHidden = !valid; n.aim.isHidden = !valid || (dash.isHidden && !lasersAlways)
-            n.grip.simdPosition = SIMD3(h.grip.px, h.grip.py, h.grip.pz) + push[i]; n.grip.simdOrientation = simd_quatf(ix: h.grip.qx, iy: h.grip.qy, iz: h.grip.qz, r: h.grip.qw)
+            var g = simd_float4x4(simd_quatf(ix: h.grip.qx, iy: h.grip.qy, iz: h.grip.qz, r: h.grip.qw)); g.columns.3 = SIMD4(SIMD3(h.grip.px, h.grip.py, h.grip.pz) + push[i], 1)
+            let cal = HandModel.gripMatrix
+            n.grip.simdTransform = g * (i == 0 ? cal.left : cal.right)   // calibrated to line up with the real controller
             let h = demo(h, hand: i), pk = demoPose == "poke" || demoPose == "cycle" && Int(CACurrentMediaTime() / 1.6) % 10 == 9 ? true : poke[i]
             if valid { rigs[i].update(h); handModels[i]?.update(h, targets: rigs[i].targets(), poke: pk) }
             if poke[i] { n.aim.isHidden = true }
