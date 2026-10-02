@@ -26,7 +26,10 @@ final class Link {
     func start(discovery: Bool = true) {
         let tcp = NWProtocolTCP.Options(); tcp.noDelay = true
         do {
-            listener = try NWListener(using: NWParameters(tls: nil, tcp: tcp), on: NWEndpoint.Port(rawValue: port)!)
+            // loopback only: the Quest reaches it over USB (adb reverse); nothing on the LAN can connect
+            let params = NWParameters(tls: nil, tcp: tcp)
+            params.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!)
+            listener = try NWListener(using: params)
         } catch {
             onIssue("Cannot listen for a headset: \(error.localizedDescription). Close other MacVR instances and reopen the app.")
             return

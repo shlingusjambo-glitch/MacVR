@@ -16,7 +16,9 @@ final class HandTuner {
     private var pose = "live"
 
     func start() {
-        guard let l = try? NWListener(using: .tcp, on: 8770) else { NSLog("VR4Mac: hand tuner port busy"); return }
+        let params = NWParameters.tcp   // loopback only: never reachable from the LAN
+        params.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: 8770)
+        guard let l = try? NWListener(using: params) else { NSLog("VR4Mac: hand tuner port busy"); return }
         l.newConnectionHandler = { [weak self] c in self?.serve(c) }
         l.start(queue: q); listener = l
     }
