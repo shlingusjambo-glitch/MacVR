@@ -144,9 +144,12 @@ final class Compositor {
         radius = r
         let m = metersPerPx, w = Float(Dashboard.W) * m, h = Float(Dashboard.H) * m, sp = Compositor.split, sp2 = Compositor.split2
         let old = panel.geometry?.firstMaterial?.diffuse.contents
-        panel.geometry = Compositor.bent(w: w, h: h * sp, r: r, v0: 0, v1: CGFloat(sp))
-        dockPanel.geometry = Compositor.bent(w: w, h: h * (sp2 - sp), r: r, v0: CGFloat(sp), v1: CGFloat(sp2))
-        kbPanel.geometry = Compositor.bent(w: w, h: h * (1 - sp2), r: r, v0: CGFloat(sp2), v1: 1)
+        // each panel bends around the viewer at its own distance (its node is scaled, so bend at distance / scale)
+        let L = layout
+        bend = [ObjectIdentifier(panel): r / L.win, ObjectIdentifier(dockPanel): (r - L.dockZ) / L.dock, ObjectIdentifier(kbPanel): (r - L.kbZ) / L.kb]
+        panel.geometry = Compositor.bent(w: w, h: h * sp, r: r / L.win, v0: 0, v1: CGFloat(sp))
+        dockPanel.geometry = Compositor.bent(w: w, h: h * (sp2 - sp), r: (r - L.dockZ) / L.dock, v0: CGFloat(sp), v1: CGFloat(sp2))
+        kbPanel.geometry = Compositor.bent(w: w, h: h * (1 - sp2), r: (r - L.kbZ) / L.kb, v0: CGFloat(sp2), v1: 1)
         for n in [panel, dockPanel, kbPanel] {   // the menu texture has transparent gaps around the window, bars and dock
             guard let mat = n.geometry?.firstMaterial else { continue }
             mat.diffuse.contents = old; mat.blendMode = .alpha; mat.writesToDepthBuffer = false
@@ -158,21 +161,31 @@ final class Compositor {
         resetLayout()
     }
     private var questLayout = true
-    func setQuestLayout(_ on: Bool) { guard on != questLayout else { return }; questLayout = on; resetLayout() }
+    private var bend: [ObjectIdentifier: Float] = [:]
+    /// Panel scales and how much nearer than the window the dock / keyboard float.
+    private var layout: (win: Float, dock: Float, kb: Float, dockZ: Float, kbZ: Float) {
+        questLayout ? (0.42, 0.7, 0.45, 0.06, 0.3) : (0.78, 0.78, 0.62, 0.3, 0.55)
+    }
+    func setQuestLayout(_ on: Bool) {
+        guard on != questLayout else { return }
+        questLayout = on
+        let r = radius; radius = 0; setRadius(r)   // rebuild the panels for the new layout
+    }
     /// Window above, dock below, exactly as laid out on the canvas.
     private func resetLayout() {
         let m = metersPerPx
         win.simdTransform = matrix_identity_float4x4; dockNode.simdTransform = matrix_identity_float4x4; kbNode.simdTransform = matrix_identity_float4x4
         if questLayout {   // Horizon OS: a compact window with the dock right under it, about as wide, both in reach
             win.simdPosition = SIMD3(0, 0.08, 0)
-            win.simdScale = SIMD3(repeating: 0.42)           // ~0.6 m wide at 0.95 m
-            let winBottom = 0.08 - 0.42 * Float(Dashboard.SPLIT) * m / 2
-            dockNode.simdPosition = SIMD3(0, winBottom - 0.075, 0.06)   // just below the window's grab bar, a touch closer
+            let L = layout
+            win.simdScale = SIMD3(repeating: L.win)           // ~45 deg wide
+            let winBottom = 0.08 - L.win * Float(Dashboard.SPLIT) * m / 2
+            dockNode.simdPosition = SIMD3(0, winBottom - 0.075 * radius / 0.95, L.dockZ)   // just below the window's grab bar, a touch closer
             dockNode.simdEulerAngles = SIMD3(-0.18, 0, 0)
-            dockNode.simdScale = SIMD3(repeating: 0.7)
-            kbNode.simdPosition = SIMD3(0, winBottom - 0.27, 0.3)
+            dockNode.simdScale = SIMD3(repeating: L.dock)
+            kbNode.simdPosition = SIMD3(0, winBottom - 0.27 * radius / 0.95, L.kbZ)
             kbNode.simdEulerAngles = SIMD3(-0.6, 0, 0)
-            kbNode.simdScale = SIMD3(repeating: 0.45)
+            kbNode.simdScale = SIMD3(repeating: L.kb)
             return
         }
         win.simdPosition = SIMD3(0, 0.12, 0)
@@ -389,9 +402,10 @@ final class Compositor {
         if atStop { grabPush = grabDist - grabDist0 - 3 * (horizontal(o, h) - handDist0) }   // no wind-up past the stop
         let p = o + d * grabDist, v = h - p
         let q = simd_quatf(angle: atan2(v.x, v.z), axis: SIMD3(0, 1, 0))
-        // Upright near eye level; once dragged well above or below the head it pitches to face you (smoothly, from ~20 deg).
+        // Quest style faces you wherever it's dragged. SteamVR style stays upright near eye level and pitches to face
+        // you once dragged well above or below the head (smoothly, from ~20 deg).
         let elev = atan2(v.y, simd_length(SIMD2(v.x, v.z)))
-        let blend = min(1, max(0, (abs(elev) - 0.35) / 0.3))
+        let blend = questLayout ? 1 : min(1, max(0, (abs(elev) - 0.35) / 0.3))   // Quest: always faces you
         let base: Float = grabPart == .dock ? -0.35 : grabPart == .keyboard ? -0.7 : 0
         let tilt = simd_quatf(angle: base + (-elev - base) * blend, axis: SIMD3(1, 0, 0))
         let sc = grabPart == .window ? min(2.2, max(0.45, grabScale * (grabDist / grabDist0).squareRoot())) : grabScale
@@ -443,8 +457,11 @@ final class Compositor {
         let q = simd_quatf(ix: head.qx, iy: head.qy, iz: head.qz, r: head.qw)
         let f = q.act(SIMD3<Float>(0, 0, -1))
         let yaw = atan2(-f.x, -f.z)
-        dash.simdPosition = SIMD3(head.px - sin(yaw) * radius, head.py - 0.2, head.pz - cos(yaw) * radius)
-        dash.simdEulerAngles = SIMD3(0, yaw, 0)
+        let drop: Float = questLayout ? 0.12 : 0.2
+        dash.simdPosition = SIMD3(head.px - sin(yaw) * radius, head.py - drop, head.pz - cos(yaw) * radius)
+        // Quest: lean the whole menu back so the window (below eye level) faces your eyes, not the horizon
+        let pitch: Float = questLayout ? atan2(drop - 0.08, radius) : 0
+        dash.simdOrientation = simd_quatf(angle: yaw, axis: SIMD3(0, 1, 0)) * simd_quatf(angle: -pitch, axis: SIMD3(1, 0, 0))
         resetLayout()
     }
 
@@ -457,7 +474,7 @@ final class Compositor {
         if rect != screenRect || screen.geometry == nil {
             screenRect = rect
             let m = metersPerPx
-            screen.geometry = Compositor.bent(w: Float(rect.width) * m, h: Float(rect.height) * m, r: radius)
+            screen.geometry = Compositor.bent(w: Float(rect.width) * m, h: Float(rect.height) * m, r: radius / layout.win)
             screen.position = SCNVector3(0, CGFloat((Float(Dashboard.SPLIT) / 2 - Float(rect.midY)) * m), 0.004)
         }
         if let m = screen.geometry?.firstMaterial {
@@ -584,10 +601,10 @@ final class Compositor {
         guard !dash.isHidden, panel.geometry != nil, let hm = handModels[i] else { return nil }
         var g = simd_float4x4(simd_quatf(ix: grip.qx, iy: grip.qy, iz: grip.qz, r: grip.qw)); g.columns.3 = SIMD4(grip.px, grip.py, grip.pz, 1)
         let tip4 = g * SIMD4(hm.indexTip, 1), tip = SIMD3(tip4.x, tip4.y, tip4.z)
-        let m = metersPerPx, w = Float(Dashboard.W) * m, h = Float(Dashboard.H) * m, sp = Compositor.split, sp2 = Compositor.split2, r = radius
+        let m = metersPerPx, w = Float(Dashboard.W) * m, h = Float(Dashboard.H) * m, sp = Compositor.split, sp2 = Compositor.split2
         var best: Touch?
         for (n, v0, v1) in [(panel, Float(0), sp), (dockPanel, sp, sp2), (kbPanel, sp2, Float(1))] where !(n === kbPanel && kbNode.isHidden) {
-            let p = n.simdConvertPosition(tip, from: nil), ph = h * (v1 - v0)
+            let p = n.simdConvertPosition(tip, from: nil), ph = h * (v1 - v0), r = bend[ObjectIdentifier(n)] ?? radius
             let a = Compositor.curved ? asin(max(-1, min(1, p.x / r))) : 0
             let zs = Compositor.curved ? r - r * cos(a) : 0
             let u = Compositor.curved ? a * r / w + 0.5 : p.x / w + 0.5, vl = 0.5 - p.y / ph

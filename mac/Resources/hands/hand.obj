@@ -1,5 +1,6 @@
 # Left hand, metres, palm centre at origin: fingers -y, palm facing -x, thumb toward +z.
 # From "hand topology technical demonstration" (handref2.fbx, Splayed mesh), scaled and trimmed past the wrist.
+# faces re-oriented consistently, outward (counter-clockwise).
 v 0.00799 0.08404 0.03024
 v 0.03109 0.08334 -0.00510
 v -0.00252 0.08455 -0.00245

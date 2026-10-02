@@ -344,7 +344,7 @@ final class Engine: ObservableObject {
         applyControllers()
         let quest = settings["menu_style"] != "SteamVR"   // Quest: a small window at arm's length, dock down by the hands
         comp.setQuestLayout(quest)
-        comp.setRadius((quest ? ["NEAR": 0.95, "MIDDLE": 1.2, "FAR": 1.6] : ["NEAR": 1.3, "MIDDLE": 1.8, "FAR": 2.5])[settings["dashboard_position"]] ?? (quest ? 0.95 : 1.3))
+        comp.setRadius((quest ? ["NEAR": 0.7, "MIDDLE": 0.95, "FAR": 1.3] : ["NEAR": 1.3, "MIDDLE": 1.8, "FAR": 2.5])[settings["dashboard_position"]] ?? (quest ? 0.7 : 1.3))
         comp.setEnvironment(ProcessInfo.processInfo.environment["VR4_ENV"] ?? settings["environment"])   // VR4_ENV: README renders
         comp.setCurved(settings.bool("ui_curved"))
         comp.setGrid(settings.bool("floor_grid"))
