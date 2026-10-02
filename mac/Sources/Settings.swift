@@ -16,7 +16,8 @@ final class Settings: ObservableObject {
     static let schema: [(String, [Item])] = [
         ("General", [Item(key: "render_scale", label: "Render Resolution", options: ["50%", "75%", "100%", "125%", "150%"], def: "100%"),
                      Item(key: "refresh_rate", label: "Headset Refresh Rate", options: ["72", "80", "90"], def: "72")]),
-        ("Play Area", [Item(key: "floor_grid", label: "Show Floor Grid", options: offOn, def: "On"),
+        ("Play Area", [Item(key: "home_style", label: "Home Architecture", options: ["Open vista", "Pavilion", "Observatory"], def: "Pavilion"),
+                       Item(key: "floor_grid", label: "Show Floor Grid", options: offOn, def: "On"),
                        Item(key: "environment", label: "Home Environment",
                             options: ["Void", "Golden Bay", "Venice Sunset", "Rooftop Night", "Kloofendal Sky", "Lilienstein", "Starry Night",
                                       "Forest", "Snowy Park", "Fireside", "Sky On Fire", "Harbour Sunset", "Moonless Night"], def: "Golden Bay")]),

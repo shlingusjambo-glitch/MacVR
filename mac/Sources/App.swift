@@ -41,7 +41,7 @@ struct VR4MacApp: App {
 
     var body: some Scene {
         Window("MacVR", id: "status") { StatusView().environmentObject(engine) }
-            .windowStyle(.hiddenTitleBar).windowResizability(.contentSize)
+            .windowStyle(.hiddenTitleBar).defaultSize(width: 1120, height: 760)
         Window("MacVR Settings", id: "settings") { SettingsView(e: engine, settings: engine.settings, games: engine.games) }
             .windowStyle(.hiddenTitleBar).windowResizability(.contentSize)
         Window("VR View", id: "vrview") { VRViewWindow(engine: engine).frame(minWidth: 320, minHeight: 320) }
@@ -111,90 +111,8 @@ struct StatusView: View {
     @EnvironmentObject var e: Engine
     @Environment(\.openWindow) private var openWindow
     var body: some View {
-        StatusBody(e: e, games: e.games, openSettings: { openWindow(id: "settings") }, openVRView: { openWindow(id: "vrview") })
+        CompanionView(e: e, games: e.games, settings: e.settings, openSettings: { openWindow(id: "settings") }, openVRView: { openWindow(id: "vrview") })
             .onAppear { DispatchQueue.main.asyncAfter(deadline: .now() + 1) { Mic.offerInstall() } }   // first launch: headset mic driver
-    }
-}
-
-struct StatusBody: View {
-    @ObservedObject var e: Engine
-    @ObservedObject var games: Games
-    var openSettings: () -> Void, openVRView: () -> Void
-    private var version: String { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "" }
-    private var playing: Game? { e.nowPlaying.isEmpty ? nil : games.playing(e.nowPlaying) }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                Badge(symbol: "visionpro", top: 0x3aa0ff, bottom: 0x7040e0, size: 34)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("MacVR OS").font(.system(size: 17, weight: .bold)).foregroundColor(.white)
-                    Text("Version \(version)").font(.system(size: 11)).foregroundColor(OS.dim)
-                }
-                Spacer()
-                Button(action: openVRView) { Image(systemName: "eye") }.buttonStyle(.plain).help("Display VR View")
-                Button(action: openSettings) { Image(systemName: "gearshape.fill") }.buttonStyle(.plain).help("Settings")
-            }.font(.system(size: 15)).foregroundColor(OS.dim).padding(.top, 6)
-
-            Card {
-                HStack(spacing: 14) {
-                    HeadsetShape().fill(e.connected ? AnyShapeStyle(OS.grad(0x3aa0ff, 0x1467e0)) : AnyShapeStyle(OS.control))
-                        .frame(width: 52, height: 34)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(e.connected ? e.device : "No headset").font(.system(size: 15, weight: .semibold)).foregroundColor(.white)
-                        HStack(spacing: 6) {
-                            Circle().fill(e.connected ? Color.green : Color.orange).frame(width: 7, height: 7)
-                            Text(e.connected ? e.streamInfo : "Open MacVR on your Quest (USB or same Wi-Fi)").font(.system(size: 11)).foregroundColor(OS.dim)
-                        }
-                    }
-                    Spacer()
-                }
-                if e.connected {
-                    HStack(spacing: 10) {
-                        controller("Left", e.hands.0); controller("Right", e.hands.1)
-                    }.padding(.top, 12)
-                } else {
-                    Text(e.connectionIssue.isEmpty
-                         ? "USB: unlock your headset and allow USB debugging. Wi-Fi: connect both devices to the same network."
-                         : e.connectionIssue)
-                        .font(.system(size: 11)).foregroundColor(e.connectionIssue.isEmpty ? OS.dim : .orange)
-                        .fixedSize(horizontal: false, vertical: true).padding(.top, 10)
-                    PillButton(title: "Retry USB connection", symbol: "arrow.clockwise") { e.link.retryUSB() }
-                        .padding(.top, 10)
-                }
-            }
-
-            Card {
-                Text("NOW PLAYING").font(.system(size: 10, weight: .bold)).foregroundColor(OS.dim).tracking(1)
-                HStack(spacing: 12) {
-                    if let g = playing, let art = games.image(g.appid, "header") {
-                        Image(decorative: art, scale: 1).resizable().aspectRatio(contentMode: .fill).frame(width: 92, height: 43).clipShape(RoundedRectangle(cornerRadius: 8))
-                    } else {
-                        Badge(symbol: e.nowPlaying.isEmpty ? "house.fill" : "gamecontroller.fill", top: 0x4fd18b, bottom: 0x1f9d5c, size: 43)
-                    }
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(e.nowPlaying.isEmpty ? "MacVR Home" : (playing?.name ?? e.nowPlaying)).font(.system(size: 15, weight: .semibold)).foregroundColor(.white).lineLimit(1)
-                        Text(e.nowPlaying.isEmpty ? e.settings["environment"] : "Running in VR").font(.system(size: 11)).foregroundColor(OS.dim)
-                    }
-                }.padding(.top, 8)
-            }
-
-            if !games.status.isEmpty { Text(games.status).font(.system(size: 11)).foregroundColor(OS.dim) }
-            PillButton(title: "Open Steam", symbol: "arrow.up.forward.app", primary: true) { e.games.openSteam() }
-            Text("\(games.library.count) games owned · \(games.library.filter(\.installed).count) installed · \(games.library.filter(\.vr).count) VR")
-                .font(.system(size: 11)).foregroundColor(OS.dim).frame(maxWidth: .infinity)
-        }
-        .padding(.horizontal, 18).padding(.bottom, 18).padding(.top, 10)
-        .frame(width: 360)
-        .background(OS.bg)
-    }
-    private func controller(_ side: String, _ on: Bool) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: "gamecontroller.fill").foregroundColor(on ? OS.accent : OS.dim)
-            Text(side).font(.system(size: 11)).foregroundColor(on ? .white : OS.dim)
-            Spacer()
-            Text(on ? "Tracking" : "Off").font(.system(size: 10)).foregroundColor(OS.dim)
-        }.padding(.horizontal, 10).padding(.vertical, 7).background(Capsule().fill(OS.card))
     }
 }
 
@@ -249,7 +167,7 @@ struct SettingsView: View {
     ]
     static let keys: [String: [String]] = [
         "general": ["render_scale", "refresh_rate"], "video": ["bitrate", "codec", "show_fps"],
-        "controllers": ["controller_model", "system_button"], "environment": ["floor_grid"],
+        "controllers": ["controller_model", "system_button"], "environment": ["home_style", "floor_grid"],
         "menu": ["menu_style", "direct_touch", "dashboard_position", "ui_curved", "show_desktop_tabs", "show_settings_tab", "show_power"],
     ]
 
@@ -434,3 +352,120 @@ struct GamesCard: View {
     }
 }
 final class Ticker: ObservableObject { func bump() { objectWillChange.send() } }
+
+
+final class CompanionUI: ObservableObject { @Published var page = "Home"; @Published var query = ""; @Published var installedOnly = false }
+
+/// The desktop companion mirrors the destinations available inside the headset.
+struct CompanionView: View {
+    @ObservedObject var e: Engine
+    @ObservedObject var games: Games
+    @ObservedObject var settings: Settings
+    var openSettings: () -> Void
+    var openVRView: () -> Void
+    @StateObject private var ui = CompanionUI()
+
+    var body: some View {
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 12) {
+                Label("MacVR", systemImage: "visionpro").font(.system(size: 24, weight: .bold)).padding(.bottom, 24)
+                ForEach([("Home", "house"), ("Library", "square.grid.2x2"), ("Spaces", "mountain.2")], id: \.0) { name, icon in
+                    Button { ui.page = name } label: {
+                        Label(name, systemImage: icon).font(.system(size: 14, weight: .semibold))
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(12)
+                            .background(RoundedRectangle(cornerRadius: 10).fill(ui.page == name ? OS.accent.opacity(0.25) : .clear))
+                    }.buttonStyle(.plain)
+                }
+                Spacer()
+                Label(e.connected ? e.device : "Headset offline", systemImage: e.connected ? "checkmark.circle.fill" : "circle.dotted")
+                    .foregroundColor(e.connected ? .green : OS.dim).font(.system(size: 12))
+                Button("Settings", systemImage: "gearshape", action: openSettings).buttonStyle(.plain)
+            }.padding(24).frame(width: 190).background(OS.sidebar)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(ui.page == "Home" ? "Your next adventure starts here." : ui.page).font(.system(size: 30, weight: .bold))
+                            Text(ui.page == "Home" ? "Your Mac. A whole new dimension." : ui.page == "Library" ? "Your games, ready when you are." : "A place to make your own.").foregroundColor(OS.dim)
+                        }
+                        Spacer()
+                        Button("VR View", systemImage: "eye", action: openVRView).buttonStyle(.bordered)
+                    }
+                    if ui.page == "Home" { home }
+                    if ui.page == "Library" { library }
+                    if ui.page == "Spaces" {
+                        Card {
+                            Text("Architecture").font(.headline).padding(.bottom, 12)
+                            Picker("Home style", selection: Binding(get: { settings["home_style"] }, set: { settings.set("home_style", $0) })) {
+                                ForEach(Settings.items["home_style"]!.options, id: \.self) { Text($0) }
+                            }.pickerStyle(.segmented)
+                            Text("Pavilion and Observatory add real 3D architecture around your chosen panorama.").font(.caption).foregroundColor(OS.dim).padding(.top, 10)
+                        }
+                        EnvironmentGrid(settings: settings)
+                    }
+                    if !games.status.isEmpty { Label(games.status, systemImage: "info.circle").foregroundColor(OS.dim).font(.callout).textSelection(.enabled) }
+                }.padding(32)
+            }
+        }.frame(minWidth: 960, minHeight: 680).background(OS.bg).foregroundColor(.white).preferredColorScheme(.dark)
+    }
+    private var home: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 16) {
+                Label(e.connected ? "CONNECTED · \(e.device)" : "LET’S GET YOU INTO VR", systemImage: "visionpro").font(.caption.bold()).tracking(1)
+                Text(e.nowPlaying.isEmpty ? "Welcome home." : e.nowPlaying).font(.system(size: 36, weight: .bold))
+                Text(e.connected ? e.streamInfo : "Connect your Quest by USB, then open MacVR in the headset.").foregroundColor(.white.opacity(0.8))
+                HStack {
+                    Button(e.connected ? "Mirror headset" : "Retry USB", action: { if e.connected { openVRView() } else { e.link.retryUSB() } }).buttonStyle(.borderedProminent)
+                    Button("Explore library") { ui.page = "Library" }.buttonStyle(.bordered)
+                }
+            }.padding(28).frame(maxWidth: .infinity, alignment: .leading)
+                .background(LinearGradient(colors: [Color(red: 0.16, green: 0.29, blue: 0.46), OS.card], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 24))
+            if !e.connectionIssue.isEmpty { Label(e.connectionIssue, systemImage: "exclamationmark.triangle").foregroundColor(.orange) }
+            if !e.connected {
+                Card {
+                    Text("Connect in three steps").font(.headline).padding(.bottom, 12)
+                    Text("1. Connect your Quest to your Mac with a USB data cable.\n2. Unlock your headset and allow USB debugging.\n3. Open MacVR in the headset. Wireless is unavailable in this build.").lineSpacing(8).foregroundColor(OS.dim)
+                }
+            }
+            HStack(spacing: 16) {
+                action("Open Steam", "gamecontroller", "Install and manage games") { games.openSteam() }
+                action("Make it yours", "mountain.2", settings["environment"]) { ui.page = "Spaces" }
+                action("Learn the controls", "sparkles", "Replay the in-headset tour") { e.replayTour() }
+            }
+        }
+    }
+    private func action(_ title: String, _ symbol: String, _ subtitle: String, _ fn: @escaping () -> Void) -> some View {
+        Button(action: fn) {
+            VStack(alignment: .leading, spacing: 12) {
+                Image(systemName: symbol).font(.title2).foregroundColor(OS.accent)
+                Text(title).font(.headline)
+                Text(subtitle).font(.caption).foregroundColor(OS.dim)
+            }.frame(maxWidth: .infinity, minHeight: 110, alignment: .leading).padding(18).background(OS.card, in: RoundedRectangle(cornerRadius: 16))
+        }.buttonStyle(.plain)
+    }
+    private var library: some View {
+        VStack(spacing: 18) {
+            HStack {
+                TextField("Search games", text: $ui.query).textFieldStyle(.roundedBorder)
+                Toggle("Installed", isOn: $ui.installedOnly).toggleStyle(.checkbox)
+                Button("Open Steam") { games.openSteam() }
+            }
+            let filtered = games.library.filter { (!ui.installedOnly || $0.installed) && (ui.query.isEmpty || $0.name.localizedCaseInsensitiveContains(ui.query)) }
+            if filtered.isEmpty { Text("No games here yet. Try another search or open Steam to install a game.").foregroundColor(OS.dim).padding(30) }
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 220))], spacing: 20) {
+                ForEach(filtered, id: \.appid) { game in
+                    VStack(alignment: .leading, spacing: 10) {
+                        Group {
+                            if let image = games.image(game.appid, "header") { Image(decorative: image, scale: 1).resizable().aspectRatio(contentMode: .fill) }
+                            else { Rectangle().fill(OS.control).overlay(Image(systemName: "gamecontroller").font(.largeTitle)) }
+                        }.frame(height: 110).clipped().cornerRadius(10)
+                        Text(game.name).font(.headline).lineLimit(1)
+                        if let progress = game.progress { ProgressView(value: progress); Text("Downloading · \(Int(progress * 100))%").font(.caption) }
+                        Button(game.installed ? "Play" : "Install in Steam") { if game.installed { games.launch(game) } else { games.install(game) } }
+                            .buttonStyle(.borderedProminent).disabled(game.progress != nil)
+                    }.padding(12).background(OS.card, in: RoundedRectangle(cornerRadius: 16))
+                }
+            }
+        }
+    }
+}

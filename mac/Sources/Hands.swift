@@ -15,6 +15,8 @@ final class HandModel {
     private let skin: [(Int, Int, Float)]
     private var bones: [Bone]
     private let joints: [[SIMD3<Float>]]
+    private let wristPos: SIMD3<Float>
+    private var placement = matrix_identity_float4x4
     /// Knuckle angles each lower finger wraps the handle with (dev fitting reads them).
     var graspAngles: [[Float]] { grasp }
     private var grasp: [[Float]] = Array(repeating: [0.9, 1.1, 0.8], count: 3)   // pinky, ring, middle joint angles wrapped on the handle
@@ -49,16 +51,6 @@ final class HandModel {
     static var boneOffsets: [HeadsetModel: [Float]] = [   // tuned by hand in the tuner
         .quest1: [0.8552, -1.2043, -1.2043, 0.6109, -0.6109, 0.2443, 0.1396, 0.1745, -0.1396, 0, 0, 0, 0, 0, 0],
     ]
-    /// Whole-controller calibration (left hand; mirrored for the right): mm offset and degrees X, Y, Z in grip space,
-    /// so the drawn controller and hand line up with the real ones.
-    static var gripOffset: [Float] = [0, 0, 0, 0, 0, 0]
-    static var gripMatrix: (left: simd_float4x4, right: simd_float4x4) {
-        let o = gripOffset, d = Float.pi / 180
-        let q = simd_quatf(angle: o[3] * d, axis: SIMD3(1, 0, 0)) * simd_quatf(angle: o[4] * d, axis: SIMD3(0, 1, 0)) * simd_quatf(angle: o[5] * d, axis: SIMD3(0, 0, 1))
-        var l = simd_float4x4(q); l.columns.3 = SIMD4(o[0] / 1000, o[1] / 1000, o[2] / 1000, 1)
-        let m = simd_float4x4(diagonal: SIMD4(-1, 1, 1, 1))
-        return (l, m * l * m)
-    }
     /// Look: fill RGB, edge RGB, fill opacity, edge opacity, edge width (0-1).
     static var look: [Float] = [0.17, 0.18, 0.2, 0.78, 0.8, 0.83, 0.68, 0.85, 0.5]
     private static let modelKeys: [String: HeadsetModel] = ["quest1": .quest1, "quest2": .quest2, "quest3": .quest3]
@@ -68,11 +60,10 @@ final class HandModel {
             if v.count == 7, let m = modelKeys[k] { place[m] = (SIMD3(v[0], v[1], v[2]), simd_normalize(simd_quatf(vector: SIMD4(v[3], v[4], v[5], v[6])))) }
             if v.count == 15, k.hasPrefix("bones_"), let m = modelKeys[String(k.dropFirst(6))] { boneOffsets[m] = v }
             if k == "look", v.count == look.count { look = v }
-            if k == "grip", v.count == 6 { gripOffset = v }
         }
     }
     static func save() {
-        var j: [String: [Float]] = ["look": look, "grip": gripOffset]
+        var j: [String: [Float]] = ["look": look]
         for (k, m) in modelKeys {
             if let p = place[m] { j[k] = [p.pos.x, p.pos.y, p.pos.z, p.rot.vector.x, p.rot.vector.y, p.rot.vector.z, p.rot.vector.w] }
             if let b = boneOffsets[m] { j["bones_" + k] = b }
@@ -120,7 +111,7 @@ final class HandModel {
 
         // bones: 0 palm (root), 1-12 fingers (3 each, pinky..index), 13-15 thumb
         let j = HandModel.fingers.map { $0.map { $0 * m } }, wr = HandModel.wrist * m
-        joints = j
+        joints = j; wristPos = wr
         var b = [Bone(parent: -1, pivot: wr, segs: [(wr, HandModel.forearm * m)] + j.map { (wr, $0[0]) })]
         let palm = SIMD3<Float>(left ? -1 : 1, 0, 0)                          // fingers curl toward it
         let pad = simd_normalize(SIMD3<Float>(left ? -0.8 : 0.8, 0, -0.6))   // thumb pad: toward the palm and index
@@ -182,6 +173,7 @@ final class HandModel {
         let v = pl.rot.vector   // mirrored across grip x for the right hand
         node.simdOrientation = left ? pl.rot : simd_quatf(vector: SIMD4(v.x, -v.y, -v.z, v.w))
         node.simdPosition = pl.pos * mirror
+        placement = node.simdTransform
         node.renderingOrder = 10   // after the opaque controller
         node.castsShadow = false
         if let controller { fitGrasp(controller) }
@@ -326,6 +318,46 @@ final class HandModel {
         apply()
     }
     private var target: [simd_quatf] = [], shown: [simd_quatf] = [], lastStep: CFTimeInterval = 0
+
+    // MARK: hand tracking
+    /// Pose the hand from the headset's 26 tracked joints (world space; OpenXR order). The mesh is placed by the
+    /// wrist and knuckles, sized to the hand, and each finger bone turns to point along its tracked bone.
+    func track(_ j: [SIMD3<Float>]) {
+        let wr = wristPos
+        func basis(_ w: SIMD3<Float>, _ m: SIMD3<Float>, _ i: SIMD3<Float>, _ p: SIMD3<Float>) -> simd_float3x3 {
+            let e1 = simd_normalize(m - w), a = i - p, e2 = simd_normalize(a - e1 * simd_dot(a, e1))
+            return simd_float3x3(e1, e2, simd_cross(e1, e2))
+        }
+        let bm = basis(wr, joints[2][0], joints[3][0], joints[0][0]), bt = basis(j[1], j[12], j[7], j[22])
+        let r = bt * bm.transpose, s = simd_distance(j[12], j[1]) / simd_distance(joints[2][0], wr)
+        var m = simd_float4x4(SIMD4(r.columns.0 * s, 0), SIMD4(r.columns.1 * s, 0), SIMD4(r.columns.2 * s, 0), SIMD4(0, 0, 0, 1))
+        m.columns.3 = SIMD4(j[1] - (r * wr) * s, 1)
+        node.simdTransform = m
+        let tracked = [[22, 23, 24, 25], [17, 18, 19, 20], [12, 13, 14, 15], [7, 8, 9, 10], [2, 3, 4, 5]]
+        for i in bones.indices { bones[i].q = simd_quatf(angle: 0, axis: SIMD3(0, 0, 1)) }
+        for (fi, idx) in tracked.enumerated() {
+            for k in 0..<3 {
+                let bi = 1 + fi * 3 + k, w = worldMatrices()[bones[bi].parent]
+                let rp = simd_float3x3(SIMD3(w.columns.0.x, w.columns.0.y, w.columns.0.z), SIMD3(w.columns.1.x, w.columns.1.y, w.columns.1.z), SIMD3(w.columns.2.x, w.columns.2.y, w.columns.2.z))
+                let want = rp.transpose * (r.transpose * (j[idx[k + 1]] - j[idx[k]])), rest = joints[fi][k + 1] - joints[fi][k]
+                guard simd_length(want) > 1e-5 else { continue }
+                bones[bi].q = simd_quatf(from: simd_normalize(rest), to: simd_normalize(want))
+            }
+        }
+        isTracked = true; poseKey = []; shown = []
+        apply()
+    }
+    private(set) var isTracked = false
+    /// The mesh's own rest joints in OpenXR order (tests; metacarpals sit at the wrist, palm between wrist and middle knuckle).
+    static func restJoints(left: Bool) -> [SIMD3<Float>] {
+        let m = left ? SIMD3<Float>(1, 1, 1) : SIMD3<Float>(-1, 1, 1), f = fingers.map { $0.map { $0 * m } }, w = wrist * m
+        var j = [(w + f[2][0]) / 2, w] + f[4]
+        for fi in [3, 2, 1, 0] { j += [w] + f[fi] }
+        return j
+    }
+    /// Back on the controller: its placement and grasp return.
+    func untrack() { guard isTracked else { return }; isTracked = false; node.simdTransform = placement; poseKey = []; shown = [] }
+
     /// Index fingertip pad in grip space (the menu's direct touch tracks it); thumb pad likewise.
     private(set) var indexTip = SIMD3<Float>.zero, thumbTip = SIMD3<Float>.zero
 
@@ -351,6 +383,35 @@ final class HandModel {
         g.materials = [material]
         g.subdivisionLevel = HandModel.smooth   // rounds the low-poly fingertips and palm creases
         node.geometry = g
+    }
+}
+
+/// Tracked hands (controllers put down) as controller input: the pinch is the trigger, the laser aims from the
+/// shoulder through the pinch point (Horizon OS style) and only shows while thumb and index are poised to pinch.
+/// The left palm turned to your face + pinch is the menu button.
+enum HandGesture {
+    private static var pinched = [false, false]   // link queue only
+    static func hand(_ j: [VR4Pose], head: VR4Pose, left: Bool, was: VR4Hand) -> VR4Hand {
+        func p(_ i: Int) -> SIMD3<Float> { SIMD3(j[i].px, j[i].py, j[i].pz) }
+        let i = left ? 0 : 1, h = SIMD3(head.px, head.py, head.pz)
+        let gap = simd_distance(p(5), p(10))   // thumb tip to index tip
+        pinched[i] = pinched[i] ? gap < 0.035 : gap < 0.02   // hysteresis: closes at 2 cm, opens past 3.5 cm
+        let palm = simd_quatf(ix: j[0].qx, iy: j[0].qy, iz: j[0].qz, r: j[0].qw)
+        let facing = simd_dot(palm.act(SIMD3(0, -1, 0)), simd_normalize(h - p(0)))   // palm normal is -y
+        // shoulder: below and beside the head, turned with it (yaw only)
+        let hq = simd_quatf(ix: head.qx, iy: head.qy, iz: head.qz, r: head.qw), f = hq.act(SIMD3<Float>(0, 0, -1))
+        let yaw = simd_quatf(angle: atan2(-f.x, -f.z), axis: SIMD3(0, 1, 0))
+        let shoulder = h + yaw.act(SIMD3(left ? -0.17 : 0.17, -0.22, 0.05))
+        let origin = (p(3) + p(7)) / 2, dir = simd_normalize(origin - shoulder)
+        let aimQ = simd_quatf(from: SIMD3(0, 0, -1), to: dir)
+        var out = VR4Hand()
+        out.flags = UInt32(VR4_HAND_ACTIVE | VR4_HAND_POSE_VALID | VR4_HAND_TRACKED)
+        if facing < 0.3 && (gap < 0.07 || pinched[i]) { out.flags |= UInt32(VR4_HAND_PINCH_READY) }
+        out.aim = VR4Pose(px: origin.x, py: origin.y, pz: origin.z, qx: aimQ.imag.x, qy: aimQ.imag.y, qz: aimQ.imag.z, qw: aimQ.real)
+        out.grip = j[0]
+        out.trigger = pinched[i] ? 1 : max(0, min(0.5, (0.07 - gap) / 0.1))
+        if left && facing > 0.6 && pinched[i] { out.buttons = UInt32(VR4_BTN_MENU); out.trigger = 0 }
+        return out
     }
 }
 

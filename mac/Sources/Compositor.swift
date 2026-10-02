@@ -173,30 +173,39 @@ final class Compositor {
     func setRadius(_ r: Float) {
         guard r != radius else { return }
         radius = r
-        let m = metersPerPx, w = Float(Dashboard.W) * m, h = Float(Dashboard.H) * m, sp = Compositor.split, sp2 = Compositor.split2
-        let old = panel.geometry?.firstMaterial?.diffuse.contents
-        // each panel bends around the viewer at its own distance (its node is scaled, so bend at distance / scale)
-        let L = layout
+        let L = layout   // each panel bends around the viewer at its own distance (its node is scaled, so bend at distance / scale)
         bend = [ObjectIdentifier(panel): r / L.win, ObjectIdentifier(dockPanel): (r - L.dockZ) / L.dock, ObjectIdentifier(kbPanel): (r - L.kbZ) / L.kb]
-        panel.geometry = Compositor.bent(w: w, h: h * sp, r: r / L.win, v0: 0, v1: CGFloat(sp))
-        for n in sides {   // side windows: their own window-only canvases (full uv)
+        for n in sides { bend[ObjectIdentifier(n)] = r / L.win }
+        built = [:]
+        screen.renderingOrder = 11
+        resetLayout()
+    }
+    private var built: [ObjectIdentifier: Float] = [:]   // bend each panel's geometry was built with
+    /// (Re)builds the panel meshes for the current `bend` radii (only those that changed), keeping their textures.
+    private func buildPanels() {
+        let m = metersPerPx, w = Float(Dashboard.W) * m, h = Float(Dashboard.H) * m, sp = Compositor.split, sp2 = Compositor.split2
+        let parts: [(SCNNode, Float, CGFloat, CGFloat)] = [(panel, h * sp, 0, CGFloat(sp)), (dockPanel, h * (sp2 - sp), CGFloat(sp), CGFloat(sp2)),
+                                                          (kbPanel, h * (1 - sp2), CGFloat(sp2), 1), (sides[0], h * sp, 0, 1), (sides[1], h * sp, 0, 1)]
+        for (n, ph, v0, v1) in parts {
+            let r = bend[ObjectIdentifier(n)] ?? radius
+            guard built[ObjectIdentifier(n)] != r else { continue }
+            built[ObjectIdentifier(n)] = r
             let old = n.geometry?.firstMaterial?.diffuse.contents
-            n.geometry = Compositor.bent(w: w, h: h * sp, r: r / L.win)
-            if let mat = n.geometry?.firstMaterial { mat.diffuse.contents = old; mat.blendMode = .alpha; mat.writesToDepthBuffer = false; mat.diffuse.mipFilter = .linear; mat.diffuse.maxAnisotropy = 16 }
-            n.renderingOrder = 10
-            bend[ObjectIdentifier(n)] = r / L.win
-        }
-        dockPanel.geometry = Compositor.bent(w: w, h: h * (sp2 - sp), r: (r - L.dockZ) / L.dock, v0: CGFloat(sp), v1: CGFloat(sp2))
-        kbPanel.geometry = Compositor.bent(w: w, h: h * (1 - sp2), r: (r - L.kbZ) / L.kb, v0: CGFloat(sp2), v1: 1)
-        for n in [panel, dockPanel, kbPanel] {   // the menu texture has transparent gaps around the window, bars and dock
-            guard let mat = n.geometry?.firstMaterial else { continue }
+            n.geometry = Compositor.bent(w: w, h: ph, r: r, v0: v0, v1: v1)
+            guard let mat = n.geometry?.firstMaterial else { continue }   // the menu texture has transparent gaps around the window, bars and dock
             mat.diffuse.contents = old; mat.blendMode = .alpha; mat.writesToDepthBuffer = false
             mat.diffuse.mipFilter = .linear; mat.diffuse.maxAnisotropy = 16   // readable text when the panel is far/small
             n.renderingOrder = 10
         }
-        screen.renderingOrder = 11
-        screen.geometry = nil
-        resetLayout()
+        if built[ObjectIdentifier(panel)] != screenBend { screen.geometry = nil }   // the desktop rebuilds on its next frame
+    }
+    private var screenBend: Float = 0
+    /// Quest: turn a panel node (at its spot in dash space) so it faces your eyes, and bend it around them exactly.
+    private func face(_ n: SCNNode, _ panel: SCNNode, scale: Float, extraTilt: Float = 0) {
+        let v = headLocal - n.simdPosition
+        n.simdEulerAngles = SIMD3(atan2(-v.y, v.z) + extraTilt, 0, 0)
+        n.simdScale = SIMD3(repeating: scale)
+        bend[ObjectIdentifier(panel)] = simd_length(v) / scale
     }
     private var questLayout = true, compact = true
     private var bend: [ObjectIdentifier: Float] = [:]
@@ -218,14 +227,16 @@ final class Compositor {
         if questLayout {   // Horizon OS: the window with the dock right under it, about as wide
             win.simdPosition = SIMD3(0, 0.08, 0)
             let L = layout
-            win.simdScale = SIMD3(repeating: L.win)           // ~48 deg wide
+            face(win, panel, scale: L.win)                    // ~48 deg wide, square on to your eyes
+            for n in sides { bend[ObjectIdentifier(n)] = bend[ObjectIdentifier(panel)] }
+            winHome = win.simdTransform
             let winBottom = 0.08 - L.win * Float(Dashboard.SPLIT) * m / 2
             dockNode.simdPosition = SIMD3(0, winBottom - 0.075 * radius / 0.95, L.dockZ)   // just below the window's grab bar, a touch closer
-            dockNode.simdEulerAngles = SIMD3(compact ? -0.18 : -0.1, 0, 0)
-            dockNode.simdScale = SIMD3(repeating: L.dock)
+            face(dockNode, dockPanel, scale: L.dock)
             kbNode.simdPosition = SIMD3(0, winBottom - (compact ? 0.2 : 0.27) * radius / 0.95, L.kbZ)
             kbNode.simdEulerAngles = SIMD3(compact ? -0.5 : -0.6, 0, 0)   // compact: tilted toward the fingers for typing
             kbNode.simdScale = SIMD3(repeating: L.kb)
+            buildPanels()
             layoutSides()
             return
         }
@@ -240,6 +251,7 @@ final class Compositor {
         kbNode.simdPosition = SIMD3(0, winBottom - 0.52, 0.55)
         kbNode.simdEulerAngles = SIMD3(-0.7, 0, 0)
         kbNode.simdScale = SIMD3(repeating: 0.62)
+        buildPanels()
     }
     func setDashboard(_ tex: MTLTexture?) {
         for n in [panel, dockPanel, kbPanel] { n.geometry?.firstMaterial?.diffuse.contents = tex }
@@ -380,6 +392,87 @@ final class Compositor {
     }
     private var kbPop: CFTimeInterval = 0
 
+    /// Static, low-poly architecture gives the panorama a grounded stereo foreground.
+    /// Kept outside the interaction area; no moving scenery or per-frame mesh work.
+    private let homeArchitecture = SCNNode()
+    private var homeStyle = ""
+    private var homeOccluded: Bool { scene.background.contents == nil || (theater.parent != nil && !theater.isHidden) || (space.parent != nil && !space.isHidden) }
+    func setHomeStyle(_ style: String) {
+        guard homeStyle != style else { return }
+        SCNTransaction.begin(); SCNTransaction.animationDuration = 0
+        defer { SCNTransaction.commit() }
+        homeStyle = style
+        homeArchitecture.name = "MacVR Home Architecture"
+        homeArchitecture.removeFromParentNode()
+        homeArchitecture.childNodes.forEach { $0.removeFromParentNode() }
+        guard style != "Open vista" else { return }
+        scene.rootNode.addChildNode(homeArchitecture)
+        let observatory = style == "Observatory"
+        func material(_ color: NSColor, glow: Bool = false) -> SCNMaterial {
+            let m = SCNMaterial(); m.diffuse.contents = color
+            m.lightingModel = .physicallyBased; m.roughness.contents = 0.78
+            if glow { m.emission.contents = color }
+            return m
+        }
+        let stone = material(NSColor(red: 0.24, green: 0.29, blue: 0.34, alpha: 1))
+        let wood = material(NSColor(red: 0.40, green: 0.28, blue: 0.19, alpha: 1))
+        let light = material(observatory ? NSColor(red: 0.27, green: 0.65, blue: 0.9, alpha: 1) : NSColor(red: 0.95, green: 0.71, blue: 0.39, alpha: 1), glow: true)
+        func add(_ geometry: SCNGeometry, _ x: Float, _ y: Float, _ z: Float, _ mat: SCNMaterial) -> SCNNode {
+            geometry.materials = [mat]
+            let n = SCNNode(geometry: geometry); n.position = SCNVector3(x, y, z)
+            homeArchitecture.addChildNode(n); return n
+        }
+        let platform = SCNCylinder(radius: 5.2, height: 0.16); platform.radialSegmentCount = 64
+        let deck = material(observatory ? NSColor(white: 0.18, alpha: 1) : NSColor(red: 0.38, green: 0.27, blue: 0.19, alpha: 1))
+        if let canvas = CGContext(data: nil, width: 512, height: 512, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {
+            for row in 0..<24 {
+                let variation = CGFloat((row * 7) % 5) * 0.012
+                canvas.setFillColor(CGColor(red: (observatory ? 0.16 : 0.30) + variation, green: (observatory ? 0.20 : 0.21) + variation,
+                                            blue: (observatory ? 0.25 : 0.14) + variation, alpha: 1))
+                canvas.fill(CGRect(x: 0, y: row * 22, width: 512, height: 21))
+                canvas.setFillColor(CGColor(gray: 0.06, alpha: 1))
+                canvas.fill(CGRect(x: 0, y: row * 22 + 21, width: 512, height: 1))
+                canvas.fill(CGRect(x: row % 2 == 0 ? 180 : 340, y: row * 22, width: 1, height: 21))
+            }
+            deck.diffuse.contents = canvas.makeImage()
+        }
+        _ = add(platform, 0, -0.12, 0, deck)
+        let rim = SCNTorus(ringRadius: 5.0, pipeRadius: 0.025); rim.ringSegmentCount = 64; rim.pipeSegmentCount = 6
+        _ = add(rim, 0, -0.025, 0, light)
+        // Columns stay to the sides and rear, leaving the forward panorama unobstructed.
+        for i in 0..<8 {
+            let a = Float(i) * .pi / 4
+            let x = sin(a) * 4.7, z = cos(a) * 4.7
+            if z < -4 { continue }
+            let column = SCNCylinder(radius: observatory ? 0.065 : 0.11, height: 3.6); column.radialSegmentCount = 8
+            _ = add(column, x, 1.72, z, observatory ? stone : wood)
+            let lamp = SCNSphere(radius: 0.10); lamp.segmentCount = 8
+            _ = add(lamp, x, 2.8, z, light)
+        }
+        let canopy = SCNTorus(ringRadius: 4.7, pipeRadius: observatory ? 0.055 : 0.12)
+        canopy.ringSegmentCount = 64; canopy.pipeSegmentCount = 8
+        _ = add(canopy, 0, 3.52, 0, observatory ? light : wood)
+        if observatory {
+            for i in 0..<3 {
+                let orbit = SCNTorus(ringRadius: CGFloat(4.4 - Double(i) * 0.25), pipeRadius: 0.018)
+                orbit.ringSegmentCount = 64; orbit.pipeSegmentCount = 4
+                let n = add(orbit, 0, 4.2 + Float(i) * 0.2, 0, light)
+                n.eulerAngles = SCNVector3(Float(i + 1) * 0.18, 0, Float(i) * 0.22)
+            }
+        } else {
+            for x: Float in [-3.5, 3.5] {
+                _ = add(SCNBox(width: 0.7, height: 0.6, length: 0.7, chamferRadius: 0.06), x, 0.22, -3.3, stone)
+                for i in 0..<5 {
+                    let leaf = SCNSphere(radius: 0.32); leaf.segmentCount = 10
+                    let n = add(leaf, x + Float(i % 2) * 0.18 - 0.09, 0.75 + Float(i) * 0.12, -3.3, material(NSColor(red: 0.13, green: 0.32 + Double(i) * 0.025, blue: 0.24, alpha: 1)))
+                    n.scale = SCNVector3(0.8, 1.7, 0.7)
+                }
+            }
+        }
+        homeArchitecture.isHidden = homeOccluded
+    }
+
     // MARK: home environments (CC0 panoramas) or the purple void
     private var envName = ""
     func setEnvironment(_ name: String) {
@@ -452,8 +545,14 @@ final class Compositor {
         grabLocal = n.simdConvertPosition(o + d * dist, from: nil)
         grabRot0 = n.simdWorldOrientation; grabStart = CACurrentMediaTime()
         carried = part == .dock ? [win, kbNode].map { ($0, n.simdWorldTransform.inverse * $0.simdWorldTransform) } : []
-        if part == .window && questLayout { beginSlots(slot: grabSlot, aim: aim) }
+        if part == .window && questLayout { beginSlots(slot: grabSlot, at: o + d * dist) }
+        if part == .dock && questLayout {   // Quest: the dock carries the whole shell (windows, slots) rigidly
+            dashLocal = dash.simdConvertPosition(o + d * dist, from: nil); dashRot0 = dash.simdWorldOrientation
+            let f = dashRot0.act(SIMD3<Float>(0, 0, -1)); dashPitch = simd_quatf(angle: -atan2(-f.y, simd_length(SIMD2(f.x, f.z))), axis: SIMD3(1, 0, 0))
+            carried = []
+        }
     }
+    private var dashLocal = SIMD3<Float>(0, 0, 0), dashRot0 = simd_quatf(angle: 0, axis: SIMD3(0, 1, 0)), dashPitch = simd_quatf(angle: 0, axis: SIMD3(1, 0, 0))
     private var grabRot0 = simd_quatf(angle: 0, axis: SIMD3(0, 1, 0)), grabStart: CFTimeInterval = 0
     /// The grabbed point stays on the ray at the distance it was grabbed, facing the head. SteamVR style: moving the
     /// hand forward/back (x3) sends it further or nearer and the window grows as it recedes. The stick pushes/pulls.
@@ -462,6 +561,14 @@ final class Compositor {
     @discardableResult
     func updateGrab(_ aim: VR4Pose, head: VR4Pose, push: Float) -> Bool {
         if grabPart == .window && questLayout { updateSlots(aim); return false }
+        if grabPart == .dock && questLayout {   // keep the grabbed point on the ray, turn to face you, keep the shell's lean
+            let (o, d) = ray(aim), h = SIMD3(head.px, head.py, head.pz), p = o + d * grabDist0, v = h - p
+            let want = simd_quatf(angle: atan2(v.x, v.z), axis: SIMD3(0, 1, 0)) * dashPitch
+            let rot = simd_slerp(dashRot0, want, Float(min(1, (CACurrentMediaTime() - grabStart) / 0.15)))
+            dash.simdWorldOrientation = rot
+            dash.simdWorldPosition = p - rot.act(dashLocal)
+            return false
+        }
         let (o, d) = ray(aim), n = node(grabPart), h = SIMD3(head.px, head.py, head.pz)
         grabPush += push
         let reach: Float = questLayout ? 0 : 3
@@ -495,8 +602,8 @@ final class Compositor {
     // while dragging); on release it settles into the nearest slot and swaps with whatever was there.
     let sides = [SCNNode(), SCNNode()]   // left, right window panels (centre is `win`)
     private let slotsNode = SCNNode()
-    private var headLocal = SIMD3<Float>(0, 0.1, 1)   // the head in dash space at the last placement
-    private var dragSlot = 1, dragAngle: Float = 0, rayYaw0: Float = 0
+    private var headLocal = SIMD3<Float>(0, 0.1, 1), winHome = matrix_identity_float4x4   // the head in dash space at the last placement
+    private var dragSlot = 1, dragAngle: Float = 0
     private var settle: (node: SCNNode, from: simd_float4x4, to: simd_float4x4, start: CFTimeInterval)?
     /// Window panel (and its home transform) for slot 0 left, 1 centre, 2 right.
     private func slotNode(_ k: Int) -> SCNNode { k == 1 ? win : sides[k == 0 ? 0 : 1] }
@@ -509,10 +616,7 @@ final class Compositor {
         let a = Float(1 - k) * slotStep + extra   // left slot is to the left (+ yaw)
         var t = matrix_identity_float4x4; t.columns.3 = SIMD4(headLocal, 1)
         var ti = matrix_identity_float4x4; ti.columns.3 = SIMD4(-headLocal, 1)
-        var base = matrix_identity_float4x4   // the centre window's home (resetLayout)
-        base.columns.3 = SIMD4(0, 0.08, 0, 1)
-        let sc = layout.win
-        base.columns.0 *= sc; base.columns.1 *= sc; base.columns.2 *= sc
+        let base = winHome   // the centre window's home (resetLayout)
         return t * simd_float4x4(simd_quatf(angle: a, axis: SIMD3(0, 1, 0))) * ti * base
     }
     private func layoutSides() {
@@ -524,11 +628,13 @@ final class Compositor {
         sides[i].geometry?.firstMaterial?.diffuse.contents = tex
         sides[i].isHidden = tex == nil || !questLayout
     }
-    private func beginSlots(slot: Int, aim: VR4Pose) {
+    private func beginSlots(slot: Int, at hit: SIMD3<Float>) {
         dragSlot = slot; dragAngle = 0
-        let (_, d) = ray(aim); rayYaw0 = atan2(d.x, d.z)
+        let l = dash.simdConvertPosition(hit, from: nil)
+        slotR = max(0.2, simd_length(SIMD2(l.x - headLocal.x, l.z - headLocal.z)))
+        grabYaw = yaw(l) - Float(1 - slot) * slotStep   // where on the window it was grabbed, as an angle
         slotsNode.childNodes.forEach { $0.removeFromParentNode() }
-        let m = metersPerPx, w = Float(Dashboard.WIN.width) * m, h = Float(Dashboard.WIN.height) * m, r = radius / layout.win
+        let m = metersPerPx, w = Float(Dashboard.WIN.width) * m, h = Float(Dashboard.WIN.height) * m, r = bend[ObjectIdentifier(panel)] ?? radius / layout.win
         func frame(_ w: Float, _ h: Float, _ a: CGFloat) -> SCNNode {
             let g = Compositor.bent(w: w, h: h, r: r, seg: 48)
             g.firstMaterial?.diffuse.contents = NSColor(white: 1, alpha: a); g.firstMaterial?.blendMode = .alpha
@@ -546,13 +652,24 @@ final class Compositor {
         if slotsNode.parent == nil { dash.addChildNode(slotsNode) }
         slotsNode.isHidden = false; slotsNode.opacity = 1; settle = nil
     }
+    private var slotR: Float = 1, grabYaw: Float = 0
+    /// Angle of a dash-space point around the head's vertical axis (0 = the centre window, + = left).
+    private func yaw(_ l: SIMD3<Float>) -> Float {
+        atan2(l.x - headLocal.x, l.z - headLocal.z) - atan2(-headLocal.x, -headLocal.z)
+    }
+    /// The window follows where the laser meets the slots' cylinder (absolute, so moving your head or body can't drift it).
     private func updateSlots(_ aim: VR4Pose) {
-        let (_, d) = ray(aim), rayYaw = atan2(d.x, d.z)
-        var dy = rayYaw - rayYaw0
+        let (o, d) = ray(aim)
+        let lo = dash.simdConvertPosition(o, from: nil), ld = dash.simdConvertVector(d, from: nil)
+        let p = SIMD2(lo.x - headLocal.x, lo.z - headLocal.z), v = SIMD2(ld.x, ld.z)
+        let a = simd_dot(v, v), b = 2 * simd_dot(p, v), c = simd_dot(p, p) - slotR * slotR, disc = b * b - 4 * a * c
+        guard a > 1e-6, disc >= 0 else { return }
+        let t = (-b + disc.squareRoot()) / (2 * a)
+        guard t > 0 else { return }
+        var dy = yaw(lo + ld * t) - grabYaw
         if dy > .pi { dy -= 2 * .pi } else if dy < -.pi { dy += 2 * .pi }
-        rayYaw0 = rayYaw
         let home = Float(1 - dragSlot) * slotStep
-        dragAngle = min(slotStep - home, max(-slotStep - home, dragAngle + dy * 1.4))   // stay within the band
+        dragAngle = min(slotStep, max(-slotStep, dy)) - home   // stay within the band
         slotNode(dragSlot).simdTransform = slotTransform(dragSlot, angle: dragAngle)
     }
     /// Release: the slot it lands in. The panels stay bound to their slots, so the caller swaps the windows' contents;
@@ -645,7 +762,8 @@ final class Compositor {
         if rect != screenRect || screen.geometry == nil {
             screenRect = rect
             let m = metersPerPx
-            screen.geometry = Compositor.bent(w: Float(rect.width) * m, h: Float(rect.height) * m, r: radius / layout.win)
+            screenBend = bend[ObjectIdentifier(panel)] ?? radius / layout.win
+            screen.geometry = Compositor.bent(w: Float(rect.width) * m, h: Float(rect.height) * m, r: screenBend)
             screen.position = SCNVector3(0, CGFloat((Float(Dashboard.SPLIT) / 2 - Float(rect.midY)) * m), 0.004)
         }
         if let m = screen.geometry?.firstMaterial {
@@ -772,7 +890,7 @@ final class Compositor {
     func touch(_ i: Int, grip: VR4Pose) -> Touch? {
         guard !dash.isHidden, panel.geometry != nil, let hm = handModels[i] else { return nil }
         var g = simd_float4x4(simd_quatf(ix: grip.qx, iy: grip.qy, iz: grip.qz, r: grip.qw)); g.columns.3 = SIMD4(grip.px, grip.py, grip.pz, 1)
-        g = g * (i == 0 ? HandModel.gripMatrix.left : HandModel.gripMatrix.right)
+        if hm.isTracked { g = matrix_identity_float4x4 }
         let tip4 = g * SIMD4(hm.indexTip, 1), tip = SIMD3(tip4.x, tip4.y, tip4.z)
         let m = metersPerPx, w = Float(Dashboard.W) * m, h = Float(Dashboard.H) * m, sp = Compositor.split, sp2 = Compositor.split2
         var best: Touch?
@@ -802,19 +920,34 @@ final class Compositor {
             let valid = h.flags & UInt32(VR4_HAND_POSE_VALID) != 0
             let n = hands[i]
             n.grip.isHidden = !valid; n.aim.isHidden = !valid || (dash.isHidden && !lasersAlways)
+            let hm = handModels.count > i ? handModels[i] : nil
+            for c in n.grip.childNodes where c !== hm?.node { c.isHidden = joints[i] != nil }   // tracked hand: no controller
+            if let j = joints[i], let hm {   // hand tracking: the grip node only carries the direct-touch push
+                var g = matrix_identity_float4x4; g.columns.3 = SIMD4(push[i], 1); n.grip.simdTransform = g
+                hm.track(j.map { SIMD3($0.px, $0.py, $0.pz) })
+                if poke[i] { n.aim.isHidden = true }
+                setLaser(n, h, rays[i])
+                continue
+            }
+            hm?.untrack()
             var g = simd_float4x4(simd_quatf(ix: h.grip.qx, iy: h.grip.qy, iz: h.grip.qz, r: h.grip.qw)); g.columns.3 = SIMD4(SIMD3(h.grip.px, h.grip.py, h.grip.pz) + push[i], 1)
-            let cal = HandModel.gripMatrix
-            n.grip.simdTransform = g * (i == 0 ? cal.left : cal.right)   // calibrated to line up with the real controller
+            n.grip.simdTransform = g
             let h = demo(h, hand: i), pk = demoPose == "poke" || demoPose == "cycle" && Int(CACurrentMediaTime() / 1.6) % 10 == 9 ? true : poke[i]
             if valid { rigs[i].update(h); handModels[i]?.update(h, targets: rigs[i].targets(), poke: pk) }
             if poke[i] { n.aim.isHidden = true }
-            n.aim.simdPosition = SIMD3(h.aim.px, h.aim.py, h.aim.pz); n.aim.simdOrientation = simd_quatf(ix: h.aim.qx, iy: h.aim.qy, iz: h.aim.qz, r: h.aim.qw)
-            let len = rays[i] ?? 3
-            n.laser.scale = SCNVector3(1, CGFloat(len), 1)
-            n.dot.isHidden = n.aim.isHidden || rays[i] == nil
-            n.dot.simdPosition = n.aim.simdConvertPosition(SIMD3(0, 0, -len), to: nil)
+            setLaser(n, h, rays[i])
         }
     }
+    private func setLaser(_ n: (grip: SCNNode, aim: SCNNode, laser: SCNNode, dot: SCNNode), _ h: VR4Hand, _ ray: Float?) {
+        n.aim.simdPosition = SIMD3(h.aim.px, h.aim.py, h.aim.pz); n.aim.simdOrientation = simd_quatf(ix: h.aim.qx, iy: h.aim.qy, iz: h.aim.qz, r: h.aim.qw)
+        if h.flags & UInt32(VR4_HAND_TRACKED) != 0 && ray == nil { n.aim.isHidden = true }   // hands: a laser only on the UI
+        let len = ray ?? 3
+        n.laser.scale = SCNVector3(1, CGFloat(len), 1)
+        n.dot.isHidden = n.aim.isHidden || ray == nil
+        n.dot.simdPosition = n.aim.simdConvertPosition(SIMD3(0, 0, -len), to: nil)
+    }
+    /// Hand-tracking joints per hand (render queue; nil = on a controller).
+    var joints: [[VR4Pose]?] = [nil, nil]
 
     // MARK: rendering
     private func texture(_ pb: CVPixelBuffer, _ fmt: MTLPixelFormat) -> MTLTexture? {
@@ -843,26 +976,66 @@ final class Compositor {
         return m
     }
 
+    /// Supersampling: the scene renders at 2x per axis and is averaged down (2x2 box) into the stream frame. Panel text is
+    /// sampled from a sharper mip level and every edge is anti-aliased.
+    static let ss = 2
+    private var ssColor: MTLTexture?
+    private lazy var downsample: MTLRenderPipelineState? = {
+        let src = """
+        #include <metal_stdlib>
+        using namespace metal;
+        struct V { float4 p [[position]]; float2 uv; };
+        vertex V vtx(uint i [[vertex_id]]) { float2 q = float2((i << 1) & 2, i & 2); V v; v.p = float4(q * 2 - 1, 0, 1); v.uv = float2(q.x, 1 - q.y); return v; }
+        fragment float4 frag(V v [[stage_in]], texture2d<float> t [[texture(0)]]) {
+            constexpr sampler s(filter::linear, address::clamp_to_edge);
+            return t.sample(s, v.uv);   // exactly 2x: one bilinear tap at the centre of each 2x2 block = their average
+        }
+        """
+        guard let lib = try? device.makeLibrary(source: src, options: nil) else { return nil }
+        let d = MTLRenderPipelineDescriptor()
+        d.vertexFunction = lib.makeFunction(name: "vtx"); d.fragmentFunction = lib.makeFunction(name: "frag")
+        d.colorAttachments[0].pixelFormat = .bgra8Unorm_srgb
+        return try? device.makeRenderPipelineState(descriptor: d)
+    }()
+
     func render(_ t: VR4Tracking, eyeW: Int, eyeH: Int) -> CVPixelBuffer? {
         guard let pb = pixelBuffer(eyeW * 2, eyeH), let color = texture(pb, .bgra8Unorm_srgb) else { return nil }
-        if depth?.width != eyeW * 2 || depth?.height != eyeH {
-            let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .depth32Float, width: eyeW * 2, height: eyeH, mipmapped: false)
+        let k = downsample == nil ? 1 : Compositor.ss, W = eyeW * 2 * k, H = eyeH * k
+        if depth?.width != W || depth?.height != H {
+            let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .depth32Float, width: W, height: H, mipmapped: false)
             d.usage = .renderTarget; d.storageMode = .private
             depth = device.makeTexture(descriptor: d)
+            let c = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm_srgb, width: W, height: H, mipmapped: false)
+            c.usage = [.renderTarget, .shaderRead]; c.storageMode = .private
+            ssColor = k > 1 ? device.makeTexture(descriptor: c) : nil
         }
         guard let cb = cq.makeCommandBuffer() else { return nil }
+        let target = ssColor ?? color
         animate(); animateSpace(); animateTour()
+        if homeArchitecture.isHidden != homeOccluded {
+            SCNTransaction.begin(); SCNTransaction.animationDuration = 0
+            homeArchitecture.isHidden = homeOccluded
+            SCNTransaction.commit()
+        }
         for (i, e) in [t.eye.0, t.eye.1].enumerated() {
             eyes[i].simdPosition = SIMD3(e.pose.px, e.pose.py, e.pose.pz)
             eyes[i].simdOrientation = simd_quatf(ix: e.pose.qx, iy: e.pose.qy, iz: e.pose.qz, r: e.pose.qw)
             eyes[i].camera!.projectionTransform = Compositor.projection(e.fov)
             renderer.pointOfView = eyes[i]
             let pd = MTLRenderPassDescriptor()
-            pd.colorAttachments[0].texture = color
+            pd.colorAttachments[0].texture = target
             pd.colorAttachments[0].loadAction = i == 0 ? .clear : .load
             pd.colorAttachments[0].storeAction = .store
             pd.depthAttachment.texture = depth; pd.depthAttachment.loadAction = .clear; pd.depthAttachment.clearDepth = 1; pd.depthAttachment.storeAction = .dontCare
-            renderer.render(atTime: CACurrentMediaTime(), viewport: CGRect(x: i * eyeW, y: 0, width: eyeW, height: eyeH), commandBuffer: cb, passDescriptor: pd)
+            renderer.render(atTime: CACurrentMediaTime(), viewport: CGRect(x: i * eyeW * k, y: 0, width: eyeW * k, height: H), commandBuffer: cb, passDescriptor: pd)
+        }
+        if let ssColor, let pipe = downsample {
+            let pd = MTLRenderPassDescriptor()
+            pd.colorAttachments[0].texture = color; pd.colorAttachments[0].loadAction = .dontCare; pd.colorAttachments[0].storeAction = .store
+            if let enc = cb.makeRenderCommandEncoder(descriptor: pd) {
+                enc.setRenderPipelineState(pipe); enc.setFragmentTexture(ssColor, index: 0)
+                enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3); enc.endEncoding()
+            }
         }
         cb.commit(); cb.waitUntilCompleted()
         return pb

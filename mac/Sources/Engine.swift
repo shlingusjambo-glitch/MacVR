@@ -72,7 +72,7 @@ final class Engine: ObservableObject {
     private var theaterOn = false, theaterPlace = false   // rq: flatscreen games / the Mac on a big screen
     private var tourFinal = false                         // rq: tour is on its "press your menu button" step
     private var lastTrack: VR4Tracking?
-    private var pending: VR4Tracking?, scheduled = false
+    private var pending: VR4Tracking?, scheduled = false, pendingJoints: [[VR4Pose]?] = [nil, nil]
     private let pendingLock = NSLock()
     private var frameId: UInt64 = 0
     private var gameSeq: UInt32 = 0, hapticSeq: UInt32 = 0, lastGameFrame = Date.distantPast, gameActive = false
@@ -112,6 +112,9 @@ final class Engine: ObservableObject {
 
     init() {
         dash = Dashboard(settings: settings, games: games)
+        if MenuFallback.install(settings) {
+            dash.note("The Quest menu crashed last time, so MacVR switched to the SteamVR menu. You can switch back in Settings > Universal Menu.", 12)
+        }
         overrideObserver = NotificationCenter.default.addObserver(forName: Dashboard.overrideChanged, object: nil, queue: nil) { [weak self] note in
             guard let appid = note.userInfo?["appid"] as? String, let key = note.userInfo?["key"] as? String else { return }
             self?.rq.async { [weak self] in
@@ -171,7 +174,7 @@ final class Engine: ObservableObject {
         dash.setMacVolume = { v in DispatchQueue.global().async { Engine.appleScript("set volume output volume \(v)") } }
         link.onHello = { [weak self] j in self?.rq.async { self?.hello(j) } }
         link.onIssue = { [weak self] message in DispatchQueue.main.async { self?.connectionIssue = message } }
-        link.onTracking = { [weak self] t in self?.tracking(t) }
+        link.onTracking = { [weak self] t, j in self?.tracking(t, joints: j) }
         link.onRequestIDR = { [weak self] in self?.encoder.forceIDR = true }
         audio.onChunk = { [weak self] pkt in
             self?.rq.async {
@@ -358,6 +361,7 @@ final class Engine: ObservableObject {
         let radii: [String: Float] = compact ? ["NEAR": 0.7, "MIDDLE": 0.85, "FAR": 1.0] : quest ? ["NEAR": 1.5, "MIDDLE": 1.8, "FAR": 2.2] : ["NEAR": 1.3, "MIDDLE": 1.8, "FAR": 2.5]
         comp.setRadius(radii[settings["dashboard_position"]] ?? radii["NEAR"]!)
         comp.setEnvironment(ProcessInfo.processInfo.environment["VR4_ENV"] ?? settings["environment"])   // VR4_ENV: README renders
+        comp.setHomeStyle(settings["home_style"])
         comp.setCurved(settings.bool("ui_curved"))
         comp.setGrid(settings.bool("floor_grid"))
         if eyeW > 0 { encoder.configure(width: eyeW * 2, height: eyeH, fps: fps, mbps: mbps, maxQP: (link.wired ? 23 : 30) + (useHEVC ? 4 : 0), hevc: useHEVC) }
@@ -433,17 +437,21 @@ final class Engine: ObservableObject {
     }
 
     /// Called on the link queue for every TRACKING packet; coalesces onto the render queue.
-    private func tracking(_ raw: VR4Tracking) {
-        var t = raw
+    private func tracking(_ raw: VR4Tracking, joints raw2: [[VR4Pose]?] = [nil, nil]) {
+        var t = raw, joints = raw2
+        for h in 0..<2 { joints[h] = joints[h]?.map { var p = $0; p.py += floorOffset; return p } }
         if floorOffset != 0 {   // LOCAL-space client: lift everything so the floor sits at y = 0 like STAGE
             t.head.py += floorOffset; t.eye.0.pose.py += floorOffset; t.eye.1.pose.py += floorOffset
             t.hand.0.aim.py += floorOffset; t.hand.0.grip.py += floorOffset; t.hand.1.aim.py += floorOffset; t.hand.1.grip.py += floorOffset
         }
+        // a tracked hand stands in for its controller: pinch = trigger, aim from the shoulder through the pinch
+        if let j = joints[0] { t.hand.0 = HandGesture.hand(j, head: t.head, left: true, was: t.hand.0) }
+        if let j = joints[1] { t.hand.1 = HandGesture.hand(j, head: t.head, left: false, was: t.hand.1) }
         shm.write(t)
-        pendingLock.lock(); pending = t; let go = !scheduled; scheduled = true; pendingLock.unlock()
+        pendingLock.lock(); pending = t; pendingJoints = joints; let go = !scheduled; scheduled = true; pendingLock.unlock()
         guard go else { return }
         rq.async { [self] in
-            pendingLock.lock(); let t = pending!; scheduled = false; pendingLock.unlock()
+            pendingLock.lock(); let t = pending!; comp.joints = pendingJoints; scheduled = false; pendingLock.unlock()
             frame(t)
         }
     }
@@ -452,6 +460,8 @@ final class Engine: ObservableObject {
     private func lasers(_ t: VR4Tracking, _ hs: [VR4Hand], _ valid: [Bool], _ trig: [Bool], _ grip: [Bool], _ rays: inout [Float?], _ poke: [Bool]) {
         var hits: [(uv: CGPoint, dist: Float, slot: Int)?] = [nil, nil]
         for i in 0..<2 where valid[i] && !poke[i] {
+            // a tracked hand points only while thumb and index are poised to pinch (or pinching / dragging)
+            if hs[i].flags & UInt32(VR4_HAND_TRACKED) != 0 && hs[i].flags & UInt32(VR4_HAND_PINCH_READY) == 0 && !trig[i] && grabHand != i { continue }
             if let h = comp.hit(hs[i].aim, solid: { self.dash.solid($0, slot: $1) }) { hits[i] = h; rays[i] = h.dist }
         }
         if !trig[activeHand] {   // the hand that pulls the trigger (or the only one pointing at the menu) drives it
@@ -461,6 +471,7 @@ final class Engine: ObservableObject {
         let a = activeHand, uv = hits[a]?.uv, dist = hits[a]?.dist, aim = hs[a].aim, head = t.head, slot = hits[a]?.slot ?? 1
         let down = trig[a] && !prevTrigger[a], held = trig[a] && prevTrigger[a], up = !trig[a] && prevTrigger[a]
         let secondary = grip[a] && !prevGrip[a], stick = grabHand == nil ? hs[a].stick_y : 0
+        let pinch = hs[a].flags & UInt32(VR4_HAND_TRACKED) != 0   // hands click on release and drag to scroll, like touch
         if grabHand == nil, dashView == "desktop", abs(hs[a].stick_x) > 0.5, hits[a] != nil {
             comp.zoomWindow(hs[a].stick_x * 0.012)   // stick left/right on the Mac desktop: smaller/bigger window
         }
@@ -468,15 +479,15 @@ final class Engine: ObservableObject {
             var changed = false
             if down, let uv {
                 laserSlot = slot
-                let p = dash.inSlot(slot) { dash.press(uv) }
+                let p = dash.inSlot(slot) { pinch ? dash.pinchDown(uv) : dash.press(uv) }
                 if p == .grabWindow || p == .grabDock || p == .grabKeyboard, let dist {
                     dash.grabbing = p == .grabWindow ? "grab" : p == .grabDock ? "grabdock" : "grabkb"
                     let part: Compositor.Part = p == .grabWindow ? .window : p == .grabDock ? .dock : .keyboard
                     rq.async { self.grabHand = a; self.comp.beginGrab(part, aim, dist: dist, head: head, slot: slot) }
                 }
                 changed = true
-            } else if held, let uv { dash.inSlot(laserSlot) { dash.drag(uv) } }
-            if up { dash.inSlot(laserSlot) { dash.release(uv) }; changed = true }
+            } else if held, let uv { dash.inSlot(laserSlot) { dash.drag(uv) }; changed = true }
+            if up { dash.inSlot(laserSlot) { pinch ? dash.touchUp(uv ?? CGPoint(x: -10, y: -10)) : dash.release(uv) }; changed = true }
             if secondary, let uv { dash.inSlot(slot) { dash.secondary(uv) } }
             if abs(stick) > 0.2, let uv, dash.inSlot(slot, { dash.scroll(stick, at: uv) }) { changed = true }
             if dash.inSlot(slot, { dash.pointer(uv) }) { changed = true; if uv != nil { haptic(a, 0.25, 0.015) } }
@@ -535,7 +546,7 @@ final class Engine: ObservableObject {
             var touchUV: CGPoint?, touchUVSlot = 1
             for i in 0..<2 where directTouch {
                 let tc = valid[i] ? comp.touch(i, grip: hs[i].grip) : nil
-                let onMenu = tc.map { dash.solid($0.uv) } ?? false, d = onMenu ? tc!.depth : 1
+                let onMenu = tc.map { dash.solid($0.uv, slot: $0.slot) } ?? false, d = onMenu ? tc!.depth : 1
                 poke[i] = onMenu && d < 0.12 && !trig[i]   // pulling the trigger keeps the laser
                 if onMenu && d < 0 && d > -0.06 { push[i] = tc!.normal * -d }
                 let wasDown = touchDown[i]
@@ -547,7 +558,7 @@ final class Engine: ObservableObject {
                 if touchDown[i] && !wasDown {   // landed: light the control (sliders start moving)
                     haptic(i, 0.3, 0.012)
                     dq.async { [self] in touchSlot[i] = ts; dash.inSlot(ts) { dash.touchDown(uv) }; requestDraw() }
-                } else if touchDown[i] { dq.async { [self] in dash.inSlot(touchSlot[i]) { dash.drag(uv) } } }
+                } else if touchDown[i] { dq.async { [self] in dash.inSlot(touchSlot[i]) { dash.drag(uv) }; requestDraw() } }   // sliders, or a swipe scrolls
                 else if wasDown {               // lifted: that's the click
                     haptic(i, 0.5, 0.02)
                     dq.async { [self] in dash.inSlot(touchSlot[i]) { dash.touchUp(uv) }; requestDraw() }
@@ -654,10 +665,18 @@ final class Engine: ObservableObject {
         let aimDown = simd_quatf(angle: -0.25, axis: SIMD3(1, 0, 0))
         var hand = VR4Hand(flags: readme ? 0 : 3, buttons: 0, aim: pose(0.2, 1.3, -0.3), grip: pose(0.2, 1.3, -0.3), trigger: 0, squeeze: 0, stick_x: 0, stick_y: 0)
         hand.aim.qx = aimDown.imag.x; hand.aim.qw = aimDown.real
+        if let v = ProcessInfo.processInfo.environment["VR4_HAND"]?.split(separator: ",").compactMap({ Float($0) }), v.count == 3 {   // grip position
+            hand.grip = pose(v[0], v[1], v[2]); hand.aim = pose(v[0], v[1], v[2]); hand.aim.qx = aimDown.imag.x; hand.aim.qw = aimDown.real
+        }
         let pitch = simd_quatf(angle: Float(ProcessInfo.processInfo.environment["VR4_PITCH"] ?? "0") ?? 0, axis: SIMD3(1, 0, 0))   // README renders
         func look(_ x: Float) -> VR4Pose { var p = pose(x, 1.6, 0); p.qx = pitch.imag.x; p.qw = pitch.real; return p }
-        let t = VR4Tracking(time_ns: 1, head: look(0), eye: (VR4Eye(pose: look(-0.032), fov: fov), VR4Eye(pose: look(0.032), fov: fov)),
+        var t = VR4Tracking(time_ns: 1, head: look(0), eye: (VR4Eye(pose: look(-0.032), fov: fov), VR4Eye(pose: look(0.032), fov: fov)),
                             hand: (VR4Hand(), hand))
+        if ProcessInfo.processInfo.environment["VR4_TRACKED"] == "1" {   // a tracked right hand, fingers forward, in front of the menu
+            let q = simd_quatf(angle: .pi / 2, axis: SIMD3(1, 0, 0))
+            let j = HandModel.restJoints(left: false).map { p -> VR4Pose in let w = q.act(p) + SIMD3(0.12, 1.35, -0.38); return VR4Pose(px: w.x, py: w.y, pz: w.z, qx: 0, qy: 0, qz: 0, qw: 1) }
+            comp.joints = [nil, j]; t.hand.1 = HandGesture.hand(j, head: t.head, left: false, was: t.hand.1)
+        }
         var nals: [UInt8] = []
         let done = DispatchSemaphore(value: 0)
         encoder.onFrame = { d, idr, _ in

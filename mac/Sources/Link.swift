@@ -4,7 +4,8 @@ import Network
 /// TCP link to the Quest app (wire protocol in common/vr4mac.h), UDP discovery broadcast and adb reverse for USB.
 final class Link {
     var onHello: ([String: Any]) -> Void = { _ in }
-    var onTracking: (VR4Tracking) -> Void = { _ in }
+    /// Tracking + each hand's 26 OpenXR joints while it is hand-tracked (nil = holding a controller / not seen).
+    var onTracking: (VR4Tracking, [[VR4Pose]?]) -> Void = { _, _ in }
     var onRequestIDR: () -> Void = {}
     var onMic: (Data) -> Void = { _ in }
     var onDisconnect: () -> Void = {}
@@ -112,8 +113,17 @@ final class Link {
     private func handle(_ type: UInt8, _ b: Data) {
         switch Int(type) {
         case VR4_HELLO: if let j = try? JSONSerialization.jsonObject(with: b) as? [String: Any] { onHello(j) }
-        case VR4_TRACKING where b.count == MemoryLayout<VR4Tracking>.size:
-            onTracking(b.withUnsafeBytes { $0.loadUnaligned(as: VR4Tracking.self) })
+        case VR4_TRACKING where b.count == MemoryLayout<VR4Tracking>.size || b.count == MemoryLayout<VR4Tracking>.size + 2 * MemoryLayout<VR4HandJoints>.size:
+            var joints: [[VR4Pose]?] = [nil, nil]
+            b.withUnsafeBytes { raw in
+                guard raw.count > MemoryLayout<VR4Tracking>.size else { return }
+                for h in 0..<2 {
+                    let o = MemoryLayout<VR4Tracking>.size + h * MemoryLayout<VR4HandJoints>.size
+                    guard raw.loadUnaligned(fromByteOffset: o, as: UInt32.self) != 0 else { continue }
+                    joints[h] = (0..<Int(VR4_HAND_JOINTS)).map { raw.loadUnaligned(fromByteOffset: o + 4 + $0 * MemoryLayout<VR4Pose>.size, as: VR4Pose.self) }
+                }
+            }
+            onTracking(b.withUnsafeBytes { $0.loadUnaligned(as: VR4Tracking.self) }, joints)
         case VR4_REQUEST_IDR: onRequestIDR()
         case VR4_MIC: onMic(b)
         default: break

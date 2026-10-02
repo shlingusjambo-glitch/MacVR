@@ -16,7 +16,7 @@ enum HeadsetModel: Int {
         let d = device.lowercased()
         if d.contains("frame") || d.contains("valve") { return .steamFrame }   // Valve Steam Frame (runs the same APK)
         if d.contains("quest 3") || d.contains("eureka") || d.contains("stardust") { return .quest3 }
-        if d.contains("monterey") || d.contains("quest 1") || d == "quest" { return .quest1 }
+        if d.contains("monterey") || d.contains("quest 1") || d == "quest" || d == "oculus quest" { return .quest1 }
         return .quest2   // Quest 2 ("hollywood") is the common case; also the safe default
     }
 

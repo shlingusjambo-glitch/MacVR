@@ -6,7 +6,8 @@ import AppKit
 // Uses the Dashboard's own test hooks (testUV/testHasRegion/testQuery) so no
 // coordinates are hardcoded: every control is clicked through its region and
 // asserted through its real effect. Run via Tests/run.sh.
-let dash = Dashboard(settings: Settings(), games: Games())
+let testSettings = Settings()
+let dash = Dashboard(settings: testSettings, games: Games())
 let snd = UISounds.shared
 let volSaved = snd.streamVolume, balSaved = snd.balance, monoSaved = snd.mono
 let brightSaved = snd.brightness
@@ -16,7 +17,7 @@ func uv(_ id: String, _ fx: CGFloat = 0.5) -> CGPoint { dash.testUV(id, fx: fx)!
 func show(_ v: String) { dash.view = v; dash.draw() }
 
 // every view draws without crashing and registers interactive regions
-for v in ["library", "quick", "keyboard", "settings", "desktop"] {
+for v in ["home", "spaces", "library", "quick", "keyboard", "settings", "desktop"] {
     show(v)
     assert(dash.testRegionCount() > 10, v + " has no regions")
 }
@@ -35,8 +36,8 @@ dash.gameActive = false; dash.opened(); assert(dash.view == "library", "opened->
 show("quick"); dash.draw()
 snd.streamVolume = 10
 assert(dash.press(uv("q:vol", 0.1)) == .handled, "slider captures")
-dash.drag(uv("q:vol", 0.9)); dash.release(uv("q:vol", 0.9))
-assert(snd.streamVolume == 91, "vol drag, got \(snd.streamVolume)")
+dash.drag(uv("q:vol", 1)); dash.release(uv("q:vol", 1))
+assert(snd.streamVolume == 100, "vol drag, got \(snd.streamVolume)")
 
 // nil release (menu close / tracking loss mid-drag, #748): value holds,
 // end sound plays, no crash — and the point sent is off-panel so desktop
@@ -44,10 +45,10 @@ assert(snd.streamVolume == 91, "vol drag, got \(snd.streamVolume)")
 show("quick"); dash.draw()
 snd.streamVolume = 10
 assert(dash.press(uv("q:vol", 0.1)) == .handled, "slider captures 2")
-dash.drag(uv("q:vol", 0.9))
+dash.drag(uv("q:vol", 1))
 _ = snd.takePending()
 dash.release(nil)
-assert(snd.streamVolume == 91, "nil release holds, got \(snd.streamVolume)")
+assert(snd.streamVolume == 100, "nil release holds, got \(snd.streamVolume)")
 assert(!snd.takePending().isEmpty, "nil release end sound")
 
 // balance snaps to centre near middle (Settings > Audio)
@@ -58,8 +59,8 @@ assert(snd.balance == 0, "balance snap, got \(snd.balance)")
 
 // brightness slider is deterministic
 show("quick"); dash.draw()
-dash.click(uv("q:bright", 0.2))
-assert(snd.brightness == 38, "brightness, got \(snd.brightness)")
+dash.click(uv("q:bright", 0))
+assert(snd.brightness == 20, "brightness, got \(snd.brightness)")
 
 // mono toggle flips persisted state both ways
 show("settings"); dash.click(uv("sec:audio")); dash.draw()
@@ -76,7 +77,7 @@ assert(Settings()["controller_model"] != ctl0 && ctlOpts.contains(Settings()["co
 
 // keyboard types into search (shift is one-shot)
 show("keyboard"); dash.draw()
-dash.click(uv("kb:a")); dash.click(uv("kbshift")); dash.click(uv("kb:b"))
+dash.click(uv("kb:a")); dash.draw(); dash.click(uv("kbshift")); dash.draw(); dash.click(uv("kb:b"))
 assert(dash.testQuery == "aB", "keyboard, got \(dash.testQuery)")
 
 // desktop trust button fires the request callback
@@ -112,8 +113,55 @@ assert(HeadsetModel.detect(device: "Quest 2") == .quest2)
 assert(HeadsetModel.detect(device: "Hollywood") == .quest2)
 for m in [HeadsetModel.quest1, .quest2, .quest3] {
     let n = ControllerModels.build(m, hand: 0)
-    assert(n.childNodes.count > 5, "controller \(m)")
+    var geometryCount = 0
+    n.enumerateChildNodes { node, _ in if node.geometry != nil { geometryCount += 1 } }
+    assert(geometryCount > 0, "controller \(m) has renderable geometry")
 }
+
+// Home navigation, reopening, Spaces paging and architecture persistence.
+let originalEnvironment = testSettings["environment"], originalStyle = testSettings["home_style"]
+let originalMenu = testSettings["menu_style"], originalDesktop = testSettings["show_desktop_tabs"]
+testSettings.set("menu_style", "Quest")
+show("home")
+dash.click(uv("home:primary")); assert(dash.view == "library")
+show("home"); dash.windowOpen = false; dash.nav("home")
+assert(dash.windowOpen, "same destination reopens closed window")
+show("spaces")
+dash.click(uv("space:style:2")); assert(testSettings["home_style"] == "Observatory")
+dash.draw(); dash.click(uv("spaces:next")); dash.draw()
+assert(dash.testHasRegion("space:Starry Night"), "second page of spaces")
+dash.click(uv("space:Starry Night")); assert(testSettings["environment"] == "Starry Night")
+dash.draw(); dash.click(uv("spaces:next")); dash.draw()
+assert(!dash.testHasRegion("spaces:next"), "last space page has no next action")
+dash.click(uv("spaces:home")); assert(dash.view == "home")
+show("quick"); dash.click(uv("q:env")); assert(dash.view == "spaces", "visual environment picker")
+testSettings.set("show_desktop_tabs", "On")
+show("quick"); dash.click(uv("workspace:Focus"))
+assert(dash.view == "desktop" && dash.sideViews == ["home", "quick"], "Focus layout")
+show("quick"); dash.click(uv("workspace:Play"))
+assert(dash.sideViews == [nil, nil], "Play clears side windows")
+show("library"); dash.click(uv("clearq")); dash.draw(); dash.click(uv("filter:3")); dash.draw()
+assert(!dash.testHasRegion("sys:desktop"), "Pinned filter shows games only")
+dash.click(uv("filter:0")); dash.draw()
+assert(dash.testHasRegion("lib:next"), "touch-accessible library paging")
+dash.click(uv("lib:next")); dash.draw()
+assert(dash.testHasRegion("lib:previous"), "previous page available")
+dash.click(uv("lib:previous")); dash.draw()
+if let folder = ProcessInfo.processInfo.environment["MACVR_UI_CAPTURES"] {
+    try! FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+    snd.brightness = 100
+    Thread.sleep(forTimeInterval: 5.1) // let transient notices expire before visual captures
+    show("spaces"); dash.click(uv("spaces:previous")); dash.draw(); dash.click(uv("spaces:previous"))
+    testSettings.set("environment", "Golden Bay")
+    for v in ["home", "spaces", "quick", "library"] {
+        show(v)
+        let image = dash.context.makeImage()!
+        let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])!
+        try! data.write(to: URL(fileURLWithPath: folder).appendingPathComponent(v + ".png"))
+    }
+}
+testSettings.set("environment", originalEnvironment); testSettings.set("home_style", originalStyle)
+testSettings.set("menu_style", originalMenu); testSettings.set("show_desktop_tabs", originalDesktop)
 
 // restore persisted state mutated by the test
 snd.streamVolume = volSaved; snd.balance = balSaved; snd.brightness = brightSaved

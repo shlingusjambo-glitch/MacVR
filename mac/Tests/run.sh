@@ -7,7 +7,13 @@
 # Usage: ./Tests/run.sh   (needs only the Xcode command line tools)
 set -e
 cd "$(dirname "$0")/.."
-swiftc -O Tests/main.swift Sources/Dashboard.swift Sources/UISounds.swift \
+D=$(mktemp -d)
+trap 'rm -rf "$D"' EXIT
+export MACVR_HOME="$D/home"
+APP="$D/UITests.app/Contents"
+mkdir -p "$APP/MacOS"
+ln -s "$PWD/Resources" "$APP/Resources"
+swiftc -Onone Tests/main.swift Sources/Dashboard.swift Sources/UISounds.swift \
     Sources/ControllerModels.swift Sources/ControllerGLB.swift Sources/Settings.swift Sources/Games.swift Sources/SteamLibrary.swift Sources/Mic.swift \
-    -o /tmp/vr4mac-dashtest
-/tmp/vr4mac-dashtest
+    -o "$APP/MacOS/UITests"
+"$APP/MacOS/UITests"

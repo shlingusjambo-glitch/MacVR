@@ -187,7 +187,7 @@ final class Games: ObservableObject {
             if let d, (r as? HTTPURLResponse)?.statusCode == 200, let src = CGImageSourceCreateWithData(d as CFData, nil),
                let img = CGImageSourceCreateImageAtIndex(src, 0, nil) {
                 self.artLock.lock(); self.art[k] = img; self.artLock.unlock()
-                self.onUpdate()
+                DispatchQueue.main.async { self.objectWillChange.send(); self.onUpdate() }
             } else if hosts.count > 1 { self.loadArt(appid, kind, k, hosts: Array(hosts.dropFirst())) }
             else { self.artLock.lock(); self.artLoading.remove(k); self.artLock.unlock() }   // every host failed: retry on a later draw
         }.resume()
@@ -440,9 +440,16 @@ final class Games: ObservableObject {
     }
 
     /// Quit the running game only (every game runs from steamapps\common); Steam keeps running.
+    /// Wine processes show Windows paths (C:\\...\\steamapps\\common\\Game\\Game.exe), so match any separator; standalone games
+    /// live in C:\\VR4Mac\\<name>. Asks nicely, then force-quits whatever is left after 3 s.
+    static let gamePattern = #"steamapps.common.|^[A-Za-z]:.VR4Mac."#
     func quitGame() {
-        let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/pkill"); p.arguments = ["-f", "steamapps/common/"]
-        try? p.run()
+        DispatchQueue.global().async {
+            func pkill(_ args: [String]) { let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/pkill"); p.arguments = args + ["-f", Games.gamePattern]; try? p.run(); p.waitUntilExit() }
+            pkill([])
+            Thread.sleep(forTimeInterval: 3)
+            pkill(["-9"])
+        }
     }
 
     /// Power button: kill everything running in the bottle.

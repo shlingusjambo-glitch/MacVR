@@ -67,7 +67,7 @@ final class HandTuner {
         }
         var bones: [String: [Float]] = [:]
         for (n, m) in HandTuner.names { bones[n] = (HandModel.boneOffsets[m] ?? Array(repeating: 0, count: 15)).map { $0 * 180 / .pi } }
-        return ["placements": out, "bones": bones, "look": HandModel.look, "grip": HandModel.gripOffset, "current": HandTuner.names.first { $0.1 == model() }?.0 ?? "quest2", "pose": pose]
+        return ["placements": out, "bones": bones, "look": HandModel.look, "current": HandTuner.names.first { $0.1 == model() }?.0 ?? "quest2", "pose": pose]
     }
 
     private func respond(_ c: NWConnection, _ r: Req) {
@@ -112,10 +112,6 @@ final class HandTuner {
                 send(c, "400 Bad Request", "text/plain", Data()); return }
             HandModel.boneOffsets[m] = v.map { $0 * .pi / 180 }
             rebuild(); json(c, ["ok": true])
-        case ("POST", "/grip"):   // whole-controller calibration: mm x, y, z, degrees x, y, z
-            guard let o = try? JSONSerialization.jsonObject(with: r.body) as? [String: Any], let v = (o["v"] as? [NSNumber])?.map(\.floatValue), v.count == 6 else {
-                send(c, "400 Bad Request", "text/plain", Data()); return }
-            HandModel.gripOffset = v; json(c, ["ok": true])
         case ("POST", "/look"):   // fill RGB, edge RGB, fill opacity, edge opacity, edge width
             guard let o = try? JSONSerialization.jsonObject(with: r.body) as? [String: Any], let v = (o["v"] as? [NSNumber])?.map(\.floatValue),
                   v.count == HandModel.look.count else { send(c, "400 Bad Request", "text/plain", Data()); return }
@@ -183,9 +179,7 @@ input[type=color]{width:34px;height:24px;border:0;background:none;padding:0;vert
 <div class="row"><button id="mT" class="on">Move <kbd>W</kbd></button><button id="mR">Rotate <kbd>E</kbd></button></div>
 <div class="row" style="margin-top:6px"><button id="sm" class="on">Smooth</button><button id="sn">Snap</button>
 <label>Step <input id="stepT" type="number" value="1" min="0.1" step="0.5"> mm</label><label><input id="stepR" type="number" value="5" min="1" step="1"> °</label></div>
-<h2>Controller calibration (live in the headset)</h2>
 <p>Hold the controllers the way you normally do and move these until the drawn controllers sit where your real ones are.</p>
-<div id="grip"></div>
 <h2>Fingers (adds to the automatic pose)</h2>
 <div class="row" id="fingers"></div><div id="joints"></div>
 <h2>Material</h2>
@@ -250,11 +244,6 @@ function drawModels(){$("#models").innerHTML=[["quest1","Quest 1"],["quest2","Qu
  document.querySelectorAll("[data-m]").forEach(b=>b.onclick=()=>{model=b.dataset.m;drawModels();drawFingers();loadController();loadMesh(true)})}
 function drawPoses(){$("#poses").innerHTML=poses.map(([p,l])=>`<button class="${p==pose?"on":""}" data-p="${p}">${l}</button>`).join("");
  document.querySelectorAll("[data-p]").forEach(b=>b.onclick=async()=>{pose=b.dataset.p;await fetch("/pose?name="+pose,{method:"POST"});drawPoses();loadMesh(false)})}
-let grip=null,gripTimer=null;
-const gripAxes=[["Left / right","mm",-60,60,0.5],["Down / up","mm",-60,60,0.5],["Forward / back","mm",-60,60,0.5],["Pitch","°",-60,60,1],["Yaw","°",-60,60,1],["Roll","°",-60,60,1]];
-function drawGrip(){$("#grip").innerHTML=gripAxes.map(([n,u,lo,hi,st],i)=>`<label class="sl">${n}<input type="range" min="${lo}" max="${hi}" step="${st}" value="${grip[i]}" data-g="${i}"><output>${grip[i]}${u}</output></label>`).join("");
- document.querySelectorAll("[data-g]").forEach(r=>r.oninput=()=>{grip[+r.dataset.g]=+r.value;r.nextElementSibling.textContent=r.value+gripAxes[+r.dataset.g][1];
-  clearTimeout(gripTimer);gripTimer=setTimeout(()=>fetch("/grip",{method:"POST",body:JSON.stringify({v:grip})}),60)})}
 const fingerNames=["Pinky","Ring","Middle","Index","Thumb"],jointNames=["Knuckle","Middle","Tip"];
 let finger=2,bones=null,look=null,boneTimer=null,lookTimer=null;
 function drawFingers(){$("#fingers").innerHTML=fingerNames.map((n,i)=>`<button class="${i==finger?"on":""}" data-f="${i}">${n}</button>`).join("");
@@ -277,7 +266,7 @@ document.querySelectorAll("[data-v]").forEach(b=>b.onclick=()=>{camera.position.
 function resize(){const w=view.clientWidth,h=view.clientHeight;renderer.setSize(w,h);camera.aspect=w/h;camera.updateProjectionMatrix()}
 addEventListener("resize",resize);resize();
 renderer.setAnimationLoop(()=>{orbit.update();renderer.render(scene,camera)});
-const st=await (await fetch("/state")).json();model=st.current;pose=st.pose;bones=st.bones;look=st.look;grip=st.grip;drawGrip();drawModels();drawPoses();drawFingers();drawLook();loadController();loadMesh(true);
+const st=await (await fetch("/state")).json();model=st.current;pose=st.pose;bones=st.bones;look=st.look;drawModels();drawPoses();drawFingers();drawLook();loadController();loadMesh(true);
 </script></body></html>
 """
 }
