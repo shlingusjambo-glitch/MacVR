@@ -38,10 +38,11 @@ final class HandModel {
     static var place: [HeadsetModel: Placement] = [   // fitted offline: palm on the handle, fingertips on its surface,
         // index on the trigger, thumb able to reach the thumbrest, stick and both face buttons, least overlap,
         // a straight index along the aim ray
-        .quest1: (SIMD3(-0.0387, 0.012, 0.0421), SIMD3(0.52, 3.0366, 0.15)),
+        .quest1: (SIMD3(-0.0389, 0.0122, 0.0402), SIMD3(0.52, 2.9916, 0.15)),
         .quest2: (SIMD3(-0.0388, 0.0097, 0.026), SIMD3(0.4975, 3.0741, -0.0225)),
         .quest3: (SIMD3(-0.0349, 0.0095, 0.0252), SIMD3(0.6588, 3.1116, 0.12)),
     ]
+    static var smooth = 1
     private var mirror: SIMD3<Float> { left ? SIMD3(1, 1, 1) : SIMD3(-1, 1, 1) }
 
     private static var cached: ([SIMD3<Float>], [[Int]])?
@@ -299,6 +300,7 @@ final class HandModel {
                                                         componentsPerVector: 4, bytesPerComponent: 4, dataOffset: 0, dataStride: 16)],
                             elements: [element])
         g.materials = [material]
+        g.subdivisionLevel = HandModel.smooth   // rounds the low-poly fingertips and palm creases
         node.geometry = g
     }
 }
