@@ -1,5 +1,15 @@
 # Changes
 
+## 1.4.0
+
+- **Update channels.** Settings > Updates > Update Channel: Public (default) or Beta, which also gets pre-releases first.
+- **Skin colour, any colour.** A toggle inside the picker turns a custom colour on; drag across the full colour field to choose it. Off gives the original hands.
+- Skin colour, Show body and Home mirror only appear, and only apply, while Show arms is on.
+- Windows have their title strip back. Close and minimise turn red and yellow when you point at them. The Back button is gone.
+- Panels get Horizon OS's soft indigo, teal and rose tint instead of a flat colour.
+- Shorter setting descriptions; most settings now explain themselves.
+- New `docs/releasing.md`: version numbers, where to change them, and Public vs Beta releases.
+
 ## 1.3.0
 
 - Wi-Fi play is back. MacVR never broadcasts: it waits, and the Quest app asks for it on the local network once a second. A headset must be connected over USB once to pair before it can connect over Wi-Fi (Settings > General > Wi-Fi Play).

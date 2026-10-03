@@ -190,7 +190,6 @@ final class Dashboard {
         func set(_ k: Int, _ v: String?) {
             if k == 1 { if let v { view = v; windowOpen = true } else { windowOpen = false } } else { sideViews[k == 0 ? 0 : 1] = v }
         }
-        navigationHistory.swapAt(a, b)
         set(a, vb); set(b, va)
         sounds.play("drop"); redraw()
     }
@@ -203,8 +202,6 @@ final class Dashboard {
     }
     private var commandPage = 0, noticePage = 0
     private var overviewReturn = "home"
-    private var navigationHistory: [[String]] = [[], [], []]
-    private var navigatingBack = false
     /// Quiet mode is Do Not Disturb (one setting): notifications collect without pop-ups.
     private var quiet: Bool { settings.bool("dnd") }
     private var query = "", kbShift = false, desktopKeyboard = false
@@ -459,10 +456,6 @@ final class Dashboard {
         powerOpen = false
         if view != id || !windowOpen {
             if quest && windowOpen && inputSlot == 1 && !["welcome", "keyboard"].contains(view) { windowJump() }   // replaces the centre window
-            if !navigatingBack && view != id && view != "welcome" {
-                navigationHistory[inputSlot].append(view == "keyboard" ? "library" : view)
-                navigationHistory[inputSlot] = Array(navigationHistory[inputSlot].suffix(16))
-            }
             view = id; if inPress { navved = true } else { sounds.play("pop") }
         }
         if id == "notifications" { unread = 0 }
@@ -489,13 +482,6 @@ final class Dashboard {
         if powerOpen { windowOpen = true }
         if inPress { navved = powerOpen } else { sounds.play(powerOpen ? "open" : "back") }
         redraw()
-    }
-
-    private func goBack() {
-        guard let previous = navigationHistory[inputSlot].popLast() else { return }
-        navigatingBack = true
-        nav(previous == "playing" && !gameActive ? "home" : previous)
-        navigatingBack = false
     }
 
     // MARK: motion: eased values, view transitions, flick physics (all instant with Reduce Motion)
@@ -861,26 +847,38 @@ final class Dashboard {
              base: desktopKeyboard ? 0x2d8cffff : 0x00000000)
         icon("keyboard", k.midX, k.midY, 0xffffffff, 1.0)
     }
-    /// Quest window: one seamless panel (like Horizon OS system panels: no title strip), with quiet close, minimise and
-    /// Back controls along the bottom edge.
+    /// Quest window: a softly tinted panel (Horizon OS's slate with an indigo, teal and rose glow), a darker title bar
+    /// along the bottom with close and minimise on the left (red / yellow on hover) and the app name centred.
     private func questChrome() {
         let w = Dashboard.WIN, bar = CGRect(x: w.minX, y: w.maxY - 72, width: w.width, height: 72)
-        rr(w, 30, 0x26323cff)
+        questPanel(w, 30)
+        ctx.saveGState(); ctx.addPath(path(w, 30)); ctx.clip()
+        ctx.setFillColor(col(0x00000038)); ctx.fill(bar)
+        ctx.restoreGState()
         if contrast { outline(w.insetBy(dx: 1, dy: 1), 30, 0xffffff70, 2); rr(CGRect(x: bar.minX, y: bar.minY, width: bar.width, height: 2), 0, 0xffffff50) }
-        let x = CGRect(x: bar.minX + 14, y: bar.minY + 8, width: 56, height: 56), m = CGRect(x: x.maxX + 8, y: x.minY, width: 56, height: 56)
+        txt(title, bar.midX, bar.midY + 10, 27, 0xd2d8dcff, align: 0.5)
         if view == "welcome" { return }   // the tour can't be closed or left (no softlock)
-        if btn("win:close", x, { [unowned self] in windowOpen = false; sounds.play("close"); redraw() }) || isPressed("win:close") { rr(x, 16, 0xffffff1c) }
-        icon("x", x.midX, x.midY, 0xa4adb4ff, 0.7)
-        if btn("win:min", m, { [unowned self] in windowOpen = false; sounds.play("back"); redraw() }) || isPressed("win:min") { rr(m, 16, 0xffffff1c) }
-        rr(CGRect(x: m.midX - 12, y: m.midY - 2, width: 24, height: 4), 2, 0xa4adb4ff)
-        let back = CGRect(x: m.maxX + 12, y: m.minY, width: 128, height: 56)
-        if !navigationHistory[drawingSlot].isEmpty {
-            if btn("win:back", back, { [unowned self] in goBack() }) { rr(back, 16, 0xffffff1c) }
-            icon("back", back.minX + 26, back.midY, 0xa4adb4ff, 0.65)
-            txt("Back", back.minX + 47, back.midY + 9, 26, 0xa4adb4ff)
-        }
+        let x = CGRect(x: bar.minX + 14, y: bar.minY + 8, width: 56, height: 56), m = CGRect(x: x.maxX + 8, y: x.minY, width: 56, height: 56)
+        let xh = btn("win:close", x, { [unowned self] in windowOpen = false; sounds.play("close"); redraw() }) || isPressed("win:close")
+        if xh { rr(x, 28, 0xff5f57ff) }
+        icon("x", x.midX, x.midY, xh ? 0xffffffff : 0xc9cfd8ff, 0.7)
+        let mh = btn("win:min", m, { [unowned self] in windowOpen = false; sounds.play("back"); redraw() }) || isPressed("win:min")
+        if mh { rr(m, 28, 0xfebc2eff) }
+        rr(CGRect(x: m.midX - 12, y: m.midY - 2, width: 24, height: 4), 2, mh ? 0x3d2a00ff : 0xc9cfd8ff)
         if view == "desktop" { desktopKeyboardButton(CGRect(x: bar.maxX - 70, y: bar.minY + 8, width: 56, height: 56)) }
         grabBar("grab", Dashboard.GRAB)
+    }
+    /// Horizon OS panel fill: slate base with soft indigo (top left), teal (top right) and rose (bottom) glows.
+    private func questPanel(_ r: CGRect, _ radius: CGFloat) {
+        rr(r, radius, 0x2c3442ff)
+        ctx.saveGState(); ctx.addPath(path(r, radius)); ctx.clip()
+        let space = CGColorSpace(name: CGColorSpace.sRGB)!
+        for (cx, cy, c) in [(0.0, 0.0, 0x3d3c6aff), (1.0, 0.0, 0x1c4a50ff), (0.5, 1.05, 0x54434cff)] as [(CGFloat, CGFloat, UInt32)] {
+            let g = CGGradient(colorsSpace: space, colors: [col(c), col(c & 0xffffff00)] as CFArray, locations: [0, 1])!
+            let p = CGPoint(x: r.minX + cx * r.width, y: r.minY + cy * r.height)
+            ctx.drawRadialGradient(g, startCenter: p, startRadius: 0, endCenter: p, endRadius: max(r.width, r.height) * 0.75, options: [])
+        }
+        ctx.restoreGState()
     }
     /// Quest-style pill; brighter and wider while hovered or held. A small dot beside it grows into an X and closes
     /// what the bar carries (window/menu, or the keyboard).
@@ -1246,7 +1244,6 @@ final class Dashboard {
               let views = saved["views"] as? [String], views.count == 3 else { return }
         if let env = saved["environment"] as? String, Settings.items["environment"]!.options.contains(env) { settings.set("environment", env) }
         if let style = saved["style"] as? String, Settings.items["home_style"]!.options.contains(style) { settings.set("home_style", style) }
-        navigationHistory = [[], [], []]
         sideViews = quest ? [views[0].isEmpty ? nil : safeWorkspaceView(views[0]), views[2].isEmpty ? nil : safeWorkspaceView(views[2])] : [nil, nil]
         nav(safeWorkspaceView(views[1])); note("Workspace restored")
     }
@@ -1281,19 +1278,19 @@ final class Dashboard {
             guard let route else {
                 txt("Room for more", r.minX + 24, r.minY + 84, 30, bold: true)
                 homeAction("overview:add:\(i)", i == 0 ? "Add library" : "Add controls", "apps", CGRect(x: r.minX + 20, y: r.maxY - 78, width: r.width - 40, height: 60)) { [unowned self] in
-                    sideViews[i == 0 ? 0 : 1] = i == 0 ? "library" : "quick"; navigationHistory[i] = []; redraw()
+                    sideViews[i == 0 ? 0 : 1] = i == 0 ? "library" : "quick"; redraw()
                 }
                 continue
             }
             let label = Dashboard.apps[route]?.label ?? "Home"
             txt(label, r.minX + 24, r.minY + 82, 30, bold: true, maxW: r.width - 48)
             homeAction("overview:open:\(i)", i == 1 || !quest ? "Return" : "Bring to center", "next", CGRect(x: r.minX + 20, y: r.maxY - 78, width: r.width - (i == 1 || !quest ? 40 : 130), height: 60)) { [unowned self] in
-                if quest && i != 1 { navigationHistory.swapAt(i, 1); sideViews[i == 0 ? 0 : 1] = safeWorkspaceView(overviewReturn) }
+                if quest && i != 1 { sideViews[i == 0 ? 0 : 1] = safeWorkspaceView(overviewReturn) }
                 nav(safeWorkspaceView(route))
             }
             if quest && i != 1 {
                 let closeRect = CGRect(x: r.maxX - 90, y: r.maxY - 78, width: 70, height: 60)
-                let hot = btn("overview:close:\(i)", closeRect) { [unowned self] in sideViews[i == 0 ? 0 : 1] = nil; navigationHistory[i] = []; redraw() }
+                let hot = btn("overview:close:\(i)", closeRect) { [unowned self] in sideViews[i == 0 ? 0 : 1] = nil; redraw() }
                 face(closeRect, 18, on: hot); icon("x", closeRect.midX, closeRect.midY, 0xffffffff, 0.8)
             }
         }
@@ -1719,7 +1716,7 @@ final class Dashboard {
     private func workspace(_ name: String) {
         guard quest else { nav(name == "Explore" ? "spaces" : "home"); return }
         if name == "Focus" && !settings.bool("show_desktop_tabs") { openDesktop(); return }
-        sideViews = [nil, nil]; navigationHistory = [[], [], []]
+        sideViews = [nil, nil]
         switch name {
         case "Focus":
             view = "desktop"; sideViews = ["home", "quick"]
@@ -1785,8 +1782,8 @@ final class Dashboard {
     ]
     private static let sectionKeys: [String: [String]] = [
         "general": ["render_scale", "refresh_rate"], "video": ["bitrate", "codec", "show_fps", "perf_hud", "theater_screen", "theater_curved", "theater_lights"],
-        "experimental": ["hand_tracking", "show_arms", "avatar_skin", "show_body", "home_mirror"],
-        "updates": ["auto_updates"],
+        "experimental": ["hand_tracking", "show_arms", "avatar_skin", "show_body", "home_mirror"],   // the last three only with Show arms
+        "updates": ["auto_updates", "update_channel"],
         "controllers": ["controller_model", "system_button"], "environment": ["home_style", "floor_grid"],
         "menu": ["menu_style", "direct_touch", "dashboard_position", "ui_curved", "dnd", "show_desktop_tabs", "show_settings_tab", "show_power"],
         "accessibility": ["text_size", "high_contrast", "reduce_motion", "left_handed"],
@@ -1855,10 +1852,10 @@ final class Dashboard {
         var y = body.minY - off
         var revealY: CGFloat?
         clipped(body.insetBy(dx: -8, dy: 0)) {
-            for key in results ?? Dashboard.sectionKeys[section] ?? [] {
+            for key in results ?? Dashboard.sectionKeys[section] ?? [] where settings.bool("show_arms") || !Settings.avatarKeys.contains(key) {
                 if reveal == key { revealY = y + off - body.minY - 12 }
+                if key == "avatar_skin" { y += skinPicker(CGRect(x: body.minX, y: y, width: body.width - 24, height: 340), clip: body) + 14; continue }
                 y += settingRow(key, CGRect(x: body.minX, y: y, width: body.width - 24, height: 0), clip: body, caption: results != nil) + 14
-                if key == "avatar_skin" && results == nil { y += skinPicker(CGRect(x: body.minX, y: y, width: body.width - 24, height: 300), clip: body) + 14 }
             }
             if results?.isEmpty == true { txt("No settings match. Try another word.", body.minX + 10, y + 40, 28, 0xa4adb4ff) }
             guard results == nil else { return }
@@ -2001,37 +1998,46 @@ final class Dashboard {
         }
         return h
     }
-    /// Skin colour at a spot on the picker: left to right light to deep, top to bottom golden to rosy undertone.
+    /// Colour at a spot on the picker: hue left to right; top pale, middle vivid, bottom dark.
     static func skinAt(_ x: CGFloat, _ y: CGFloat) -> (CGFloat, CGFloat, CGFloat) {
-        let stops: [(CGFloat, CGFloat, CGFloat)] = [(1.0, 0.87, 0.77), (0.92, 0.72, 0.58), (0.78, 0.55, 0.38), (0.6, 0.38, 0.24), (0.4, 0.23, 0.14), (0.2, 0.11, 0.07)]
-        let f = min(max(x, 0), 1) * CGFloat(stops.count - 1), i = min(Int(f), stops.count - 2), t = f - CGFloat(i)
-        let a = stops[i], b = stops[i + 1], u = (min(max(y, 0), 1) - 0.5) * 0.12
-        return (min(1, a.0 + (b.0 - a.0) * t + u * 0.3), a.1 + (b.1 - a.1) * t - u * 0.5, min(1, max(0, a.2 + (b.2 - a.2) * t + u * 0.6)))
+        let y = min(max(y, 0), 1), sat = y < 0.5 ? y * 2 : 1, bri = y < 0.5 ? 1 : 1 - (y - 0.5) * 1.8
+        let c = NSColor(hue: min(max(x, 0), 1), saturation: sat, brightness: bri, alpha: 1).usingColorSpace(.sRGB)!
+        return (c.redComponent, c.greenComponent, c.blueComponent)
     }
     private static var skinField: CGImage?
-    /// Big skin-tone chooser under Settings > Experimental > Skin tone: drag anywhere on it, the hands update on release.
-    private func skinPicker(_ r: CGRect, clip: CGRect) -> CGFloat {
+    private static func hex(_ c: (CGFloat, CGFloat, CGFloat)) -> String { String(format: "#%02X%02X%02X", Int(c.0 * 255), Int(c.1 * 255), Int(c.2 * 255)) }
+    /// Skin colour (Settings > Experimental, with Show arms): a toggle for a custom colour and, while on, a big
+    /// any-colour field to drag across. Off = the original grey hands. The hands update when you let go.
+    private func skinPicker(_ r0: CGRect, clip: CGRect) -> CGFloat {
+        let custom = settings["avatar_skin"].hasPrefix("#")
+        let r = CGRect(x: r0.minX, y: r0.minY, width: r0.width, height: custom ? r0.height : 104)
         guard r.maxY > clip.minY - 10, r.minY < clip.maxY + 10 else { return r.height }
         face(r, 22, on: false, base: 0x2c343fff)
-        txt("Custom skin tone", r.minX + 30, r.minY + 46, 30)
-        txt("Drag across the colours. Presets above still work.", r.minX + 30, r.minY + 80, 24, 0xa4adb4ff)
+        txt("Skin colour", r.minX + 30, r.minY + 60, 30)
+        let tg = CGRect(x: r.maxX - 130, y: r.minY + 28, width: 96, height: 48)
+        if tg.intersection(clip).height > 30, btn("set:avatar_skin", tg.insetBy(dx: -20, dy: -10), { [unowned self] in
+            settings.set("avatar_skin", custom ? "Original" : UserDefaults.standard.string(forKey: "skin.color") ?? "#C68863")
+            sounds.play(custom ? "off" : "on"); redraw()
+        }) { rr(tg.insetBy(dx: -6, dy: -6), 30, 0xffffff14) }
+        toggle(tg, custom, id: "avatar_skin")
+        guard custom else { return r.height }
         let field = CGRect(x: r.minX + 30, y: r.minY + 104, width: r.width - 240, height: r.height - 130)
         if Dashboard.skinField == nil {
-            let c = CGContext(data: nil, width: 128, height: 32, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
-            for x in 0..<128 { for y in 0..<32 {
-                let (cr, cg, cb) = Dashboard.skinAt(CGFloat(x) / 127, CGFloat(y) / 31)
-                c.setFillColor(CGColor(srgbRed: cr, green: cg, blue: cb, alpha: 1)); c.fill(CGRect(x: x, y: 31 - y, width: 1, height: 1))
+            let c = CGContext(data: nil, width: 180, height: 60, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            for x in 0..<180 { for y in 0..<60 {
+                let (cr, cg, cb) = Dashboard.skinAt(CGFloat(x) / 179, CGFloat(y) / 59)
+                c.setFillColor(CGColor(srgbRed: cr, green: cg, blue: cb, alpha: 1)); c.fill(CGRect(x: x, y: y, width: 1, height: 1))   // the menu canvas is flipped: row 0 shows on top
             } }
             Dashboard.skinField = c.makeImage()
         }
-        let pick = { [unowned self] (p: CGPoint) -> (CGFloat, CGFloat) in (min(max((p.x - field.minX) / field.width, 0), 1), min(max((p.y - field.minY) / field.height, 0), 1)) }
+        let pick = { (p: CGPoint) -> (CGFloat, CGFloat) in (min(max((p.x - field.minX) / field.width, 0), 1), min(max((p.y - field.minY) / field.height, 0), 1)) }
         let vis = field.intersection(clip)
         if vis.height > 30 {
             _ = dragRegion("skin:field", vis.insetBy(dx: -10, dy: -10)) { [unowned self] p, phase in
                 let (x, y) = pick(p); skinDraft = (x, y)
                 if phase == 3 {
-                    let (cr, cg, cb) = Dashboard.skinAt(x, y)
-                    settings.set("avatar_skin", String(format: "#%02X%02X%02X", Int(cr * 255), Int(cg * 255), Int(cb * 255)))
+                    let h = Dashboard.hex(Dashboard.skinAt(x, y))
+                    settings.set("avatar_skin", h); UserDefaults.standard.set(h, forKey: "skin.color")
                     UserDefaults.standard.set([Double(x), Double(y)], forKey: "skin.pick"); sounds.play("on")
                 }
                 redraw()
@@ -2041,18 +2047,15 @@ final class Dashboard {
         if let img = Dashboard.skinField { ctx.interpolationQuality = .high; ctx.draw(img, in: field) }
         ctx.restoreGState()
         let saved = UserDefaults.standard.array(forKey: "skin.pick") as? [Double]
-        let custom = settings["avatar_skin"].hasPrefix("#")
-        if let (x, y) = skinDraft ?? (custom ? saved.map { (CGFloat($0[0]), CGFloat($0[1])) } : nil) {
+        if let (x, y) = skinDraft ?? saved.map({ (CGFloat($0[0]), CGFloat($0[1])) }) {
             let m = CGPoint(x: field.minX + x * field.width, y: field.minY + y * field.height)
             ctx.setStrokeColor(CGColor(gray: 0, alpha: 0.45)); ctx.setLineWidth(10); ctx.strokeEllipse(in: CGRect(x: m.x - 22, y: m.y - 22, width: 44, height: 44))
             ctx.setStrokeColor(CGColor(gray: 1, alpha: 1)); ctx.setLineWidth(5); ctx.strokeEllipse(in: CGRect(x: m.x - 22, y: m.y - 22, width: 44, height: 44))
         }
-        // preview: the chosen (or dragged) tone, big
         let tone: NSColor = skinDraft.map { let (cr, cg, cb) = Dashboard.skinAt($0.0, $0.1); return NSColor(srgbRed: cr, green: cg, blue: cb, alpha: 1) } ?? Settings.skinColor(settings["avatar_skin"])
-        let sw = CGRect(x: r.maxX - 180, y: field.minY, width: 150, height: 150)
+        let sw = CGRect(x: r.maxX - 180, y: field.midY - 75, width: 150, height: 150)
         ctx.setFillColor(tone.cgColor); ctx.fillEllipse(in: sw)
         ctx.setStrokeColor(CGColor(gray: 1, alpha: 0.25)); ctx.setLineWidth(3); ctx.strokeEllipse(in: sw)
-        txt(custom || skinDraft != nil ? "Custom" : settings["avatar_skin"], sw.midX, sw.maxY + 30, 24, 0xc9cfd8ff, bold: true, align: 0.5)
         if capture?.id != "skin:field" { skinDraft = nil }
         return r.height
     }

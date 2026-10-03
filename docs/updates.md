@@ -7,7 +7,10 @@ updates off, checking only reports availability; Install available updates is an
 explicit action.
 
 Release sources are the `shlingusjambo-glitch/MacVR`, `WineXR`, and `SiliconXR`
-GitHub repositories. Drafts and prereleases are excluded. Every downloaded asset
+GitHub repositories. Update Channel picks which releases count: **Public** follows
+each repo's latest release (tags `vX.Y.Z`); **Beta** also takes pre-releases (tags
+`vX.Y.Z-beta.N`), whichever is newest. Drafts are always excluded. See
+[releasing.md](releasing.md) for how versions and tags are made. Every downloaded asset
 must have a GitHub SHA-256 digest and pass verification. MacVR also validates the
 archive paths, bundle identifier/version and code signature before staging it.
 

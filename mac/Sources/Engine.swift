@@ -429,9 +429,10 @@ final class Engine: ObservableObject {
         comp.setHomeStyle(settings["home_style"])
         comp.setCurved(settings.bool("ui_curved"))
         comp.showArms = settings.bool("show_arms")
-        comp.skinTone = settings["avatar_skin"]
-        comp.showBody = settings.bool("show_body")
-        comp.showMirror = settings.bool("home_mirror")
+        let arms = settings.bool("show_arms")   // skin colour, body and mirror only apply with arms on
+        comp.skinTone = arms ? settings["avatar_skin"] : "Original"
+        comp.showBody = arms && settings.bool("show_body")
+        comp.showMirror = arms && settings.bool("home_mirror")
         comp.reduceMotion = settings.bool("reduce_motion")
         comp.setTheaterStyle(Compositor.theaterStyle(screen: settings["theater_screen"], curved: settings.bool("theater_curved"), lights: settings["theater_lights"]))
         comp.setGrid(settings.bool("floor_grid"))

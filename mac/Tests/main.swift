@@ -226,15 +226,8 @@ for style in ["Quest", "SteamVR"] {
 }
 dash.gameActive = false; testSettings.set("menu_style", "Quest")
 
-// Independent window histories.
-show("quick"); dash.nav("overview"); dash.draw(); dash.click(uv("win:back")); assert(dash.view == "quick", "back returns to controls")
-// Reset to a known workspace, then navigate the left window independently.
-dash.nav("overview"); dash.draw(); dash.click(uv("overview:Focus")); dash.draw()
-dash.inSlot(0) { dash.nav("spaces") }; dash.draw()
-assert(dash.sideViews[0] == "spaces" && dash.view == "desktop")
-dash.inSlot(0) { dash.click(dash.testUV("win:back", slot: 0)!) }; dash.draw()
-assert(dash.sideViews[0] == "home" && dash.view == "desktop", "side-window back is isolated")
-dash.nav("quick"); dash.draw(); dash.click(uv("win:back")); assert(dash.view == "desktop")
+// Window title strip: close and minimise, no Back button
+show("quick"); assert(dash.testHasRegion("win:close") && dash.testHasRegion("win:min") && !dash.testHasRegion("win:back"), "close + minimise only")
 dash.nav("overview"); dash.draw(); dash.click(uv("overview:Play"))
 
 show("library"); dash.draw()
@@ -456,18 +449,28 @@ for (key, value) in zip(shellKeys, originalShellValues) {
     if let value { UserDefaults.standard.set(value, forKey: key) } else { UserDefaults.standard.removeObject(forKey: key) }
 }
 
-// big skin-tone picker: drag picks a custom #RRGGBB tone, presets still apply
-let skinSaved = testSettings["avatar_skin"]
+// update channels: public beats its betas, betas order by number
+assert(Updates.newer("1.4.0", than: "1.4.0-beta.3") && Updates.newer("1.4.0-beta.2", than: "1.4.0-beta.1") && Updates.newer("v1.4.0-beta.1", than: "1.3.9"))
+assert(!Updates.newer("1.4.0-beta.9", than: "1.4.0") && !Updates.newer("1.3.0", than: "1.3.0") && Updates.newer("1.10.0", than: "1.9.9"))
+// skin colour: only with Show arms; a toggle inside the picker, then any colour from the field
+let skinSaved = testSettings["avatar_skin"], armsSaved = testSettings["show_arms"]
+testSettings.set("show_arms", "Off"); testSettings.set("avatar_skin", "Original")
 show("settings"); dash.click(uv("sec:experimental")); dash.draw()
+assert(!dash.testHasRegion("set:avatar_skin") && !dash.testHasRegion("set:show_body") && !dash.testHasRegion("set:home_mirror"), "avatar options hidden without arms")
+testSettings.set("show_arms", "On"); dash.draw()
+for _ in 0..<12 where !dash.testHasRegion("set:avatar_skin") { _ = dash.scroll(-1, at: CGPoint(x: 0.6, y: 0.4)); dash.draw() }
+assert(dash.testHasRegion("set:show_body") && dash.testHasRegion("set:avatar_skin") && !dash.testHasRegion("skin:field"), "toggle shown, field hidden while off")
+dash.click(uv("set:avatar_skin")); dash.draw()
+assert(testSettings["avatar_skin"].hasPrefix("#"), "toggle on picks a colour")
 for _ in 0..<12 where !dash.testHasRegion("skin:field") { _ = dash.scroll(-1, at: CGPoint(x: 0.6, y: 0.4)); dash.draw() }
-assert(dash.testHasRegion("skin:field"), "skin picker shown under Skin tone")
-assert(dash.press(uv("skin:field", 0.1)) == .handled, "skin picker captures")
-dash.drag(uv("skin:field", 0.8)); dash.release(uv("skin:field", 0.8)); dash.draw()
-assert(testSettings["avatar_skin"].hasPrefix("#") && testSettings["avatar_skin"].count == 7, "custom tone saved, got \(testSettings["avatar_skin"])")
+assert(dash.press(uv("skin:field", 0.1)) == .handled, "colour field captures")
+dash.drag(uv("skin:field", 0.6)); dash.release(uv("skin:field", 0.6)); dash.draw()
+let picked = testSettings["avatar_skin"]
+assert(picked.hasPrefix("#") && picked.count == 7, "custom colour saved, got \(picked)")
 if let out = ProcessInfo.processInfo.environment["SKIN_PNG"], let img = dash.context.makeImage(),
    let d = CGImageDestinationCreateWithURL(URL(fileURLWithPath: out) as CFURL, "public.png" as CFString, 1, nil) { CGImageDestinationAddImage(d, img, nil); CGImageDestinationFinalize(d) }
-testSettings.set("avatar_skin", "Tan"); assert(testSettings["avatar_skin"] == "Tan", "presets still work")
-testSettings.set("avatar_skin", skinSaved.isEmpty ? "Original" : skinSaved)
+dash.click(uv("set:avatar_skin")); assert(testSettings["avatar_skin"] == "Original", "toggle off restores the original hands")
+testSettings.set("avatar_skin", skinSaved.isEmpty ? "Original" : skinSaved); testSettings.set("show_arms", armsSaved.isEmpty ? "Off" : armsSaved)
 // restore persisted state mutated by the test
 snd.streamVolume = volSaved; snd.balance = balSaved; snd.brightness = brightSaved
 if snd.mono != monoSaved { snd.mono = monoSaved }

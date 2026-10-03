@@ -260,7 +260,24 @@ struct SettingsView: View {
     }
 
     @ViewBuilder private func row(_ key: String) -> some View {
-        if let it = Settings.items[key] {
+        if Settings.avatarKeys.contains(key) && settings.values["show_arms"] != "On" {
+            EmptyView()   // avatar options only with Show arms
+        } else if key == "avatar_skin" {
+            HStack {
+                Text("Skin colour").font(.system(size: 13)).foregroundColor(.white)
+                Spacer()
+                if settings.values["avatar_skin"]?.hasPrefix("#") == true {
+                    ColorPicker("", selection: Binding(get: { Color(nsColor: Settings.skinColor(settings.values["avatar_skin"] ?? "")) }, set: { c in
+                        guard let s = NSColor(c).usingColorSpace(.sRGB) else { return }
+                        let h = String(format: "#%02X%02X%02X", Int(s.redComponent * 255), Int(s.greenComponent * 255), Int(s.blueComponent * 255))
+                        settings.set("avatar_skin", h); UserDefaults.standard.set(h, forKey: "skin.color")
+                    }), supportsOpacity: false).labelsHidden()
+                }
+                Toggle("", isOn: Binding(get: { settings.values["avatar_skin"]?.hasPrefix("#") == true },
+                                         set: { settings.set("avatar_skin", $0 ? UserDefaults.standard.string(forKey: "skin.color") ?? "#C68863" : "Original") }))
+                    .toggleStyle(.switch).labelsHidden()
+            }
+        } else if let it = Settings.items[key] {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(it.label).font(.system(size: 13)).foregroundColor(.white)

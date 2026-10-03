@@ -2,7 +2,9 @@ import Foundation
 import CryptoKit
 import AppKit
 
-/// Stable GitHub releases, verified before installation. Downloads never overwrite a running runtime.
+/// GitHub releases, verified before installation. Downloads never overwrite a running runtime.
+/// Channels (Settings > Updates > Update Channel, see docs/releasing.md): Public follows the repo's latest release
+/// (tags vX.Y.Z); Beta also takes pre-releases (tags vX.Y.Z-beta.N), whichever version is newest.
 final class Updates {
     static let shared = Updates()
     static let changed = Notification.Name("MacVR.updatesChanged")
@@ -71,11 +73,22 @@ final class Updates {
     }
     private struct Asset: Decodable { let name: String; let browser_download_url: URL; let digest: String? }
     private struct Release: Decodable { let tag_name: String; let draft: Bool; let prerelease: Bool; let assets: [Asset] }
+    /// "1.4.0" > "1.4.0-beta.2" > "1.4.0-beta.1" > "1.3.9" (a leading v is ignored).
     static func newer(_ candidate: String, than installed: String) -> Bool {
-        func parts(_ s: String) -> [Int] { s.trimmingCharacters(in: CharacterSet(charactersIn: "vV")).split(separator: ".").map { Int($0) ?? 0 } }
+        func parts(_ s: String) -> (core: [Int], beta: Int?) {
+            let v = s.trimmingCharacters(in: CharacterSet(charactersIn: "vV")), split = v.split(separator: "-", maxSplits: 1)
+            let beta = split.count > 1 ? Int(split[1].split(separator: ".").last ?? "") ?? 0 : nil
+            return (split.first.map { $0.split(separator: ".").map { Int($0) ?? 0 } } ?? [], beta)
+        }
         let a = parts(candidate), b = parts(installed)
-        for i in 0..<max(a.count, b.count) { let x = i < a.count ? a[i] : 0, y = i < b.count ? b[i] : 0; if x != y { return x > y } }
-        return false
+        for i in 0..<max(a.core.count, b.core.count) {
+            let x = i < a.core.count ? a.core[i] : 0, y = i < b.core.count ? b.core[i] : 0; if x != y { return x > y }
+        }
+        switch (a.beta, b.beta) {
+        case (nil, .some): return true          // the public release beats its betas
+        case (.some(let x), .some(let y)): return x > y
+        default: return false
+        }
     }
     private func fetch(_ url: URL) throws -> Data {
         var req = URLRequest(url: url); req.timeoutInterval = 90
@@ -113,8 +126,16 @@ final class Updates {
         try data.write(to: file, options: .atomic); return file
     }
     private func update(_ component: String, install: Bool) throws -> String {
-        let release = try JSONDecoder().decode(Release.self, from: fetch(URL(string: "https://api.github.com/repos/shlingusjambo-glitch/\(component)/releases/latest")!))
-        guard !release.draft, !release.prerelease else { return "\(component): no stable update" }
+        let beta = settings?["update_channel"] == "Beta"
+        let release: Release
+        if beta {   // newest of releases and pre-releases
+            let all = try JSONDecoder().decode([Release].self, from: fetch(URL(string: "https://api.github.com/repos/shlingusjambo-glitch/\(component)/releases?per_page=30")!))
+            guard let best = all.filter({ !$0.draft }).max(by: { Self.newer($1.tag_name, than: $0.tag_name) }) else { return "\(component): no releases" }
+            release = best
+        } else {
+            release = try JSONDecoder().decode(Release.self, from: fetch(URL(string: "https://api.github.com/repos/shlingusjambo-glitch/\(component)/releases/latest")!))
+            guard !release.draft, !release.prerelease else { return "\(component): no public update" }
+        }
         let baseline = Self.bundledVersion(component)
         let saved = UserDefaults.standard.string(forKey: "updates.version.\(component)") ?? baseline
         let hasInstalled = FileManager.default.fileExists(atPath: Self.root.appendingPathComponent("Installed/" + component).path)
