@@ -50,8 +50,10 @@ release/   build-release.sh (DMG/zip + APK staging), export-repos.sh (publish sp
    (or join the same Wi-Fi), and pick your game in the library. VR-capable
    games already installed under Wine are detected automatically.
 
-Wireless: same Wi-Fi, the headset finds the Mac by UDP broadcast. If your
-network blocks broadcasts, enter the Mac address explicitly in the client.
+Wireless: connect with USB once to pair, then unplug. On the same Wi-Fi the Quest app
+asks for your Mac once a second and connects when MacVR answers (the Mac never
+broadcasts, and unpaired headsets are refused). Turn it off in Settings > General >
+Wi-Fi Play, and allow MacVR in System Settings > Privacy & Security > Local Network. If your network blocks broadcasts, enter the Mac address explicitly in the client.
 
 ## Build from source
 

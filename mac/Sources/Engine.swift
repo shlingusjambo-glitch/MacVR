@@ -46,7 +46,9 @@ final class Engine: ObservableObject {
     private var testScreen: CVPixelBuffer?
     let settings = Settings(), games = Games(), link = Link(), encoder = Encoder(), shm = Shm(scratch: Engine.offline), desktop = DesktopCapture(), audio = AudioCapture()
     let dash: Dashboard
+    #if MACVR_DEV
     private let tuner = HandTuner()
+    #endif
     private let comp = Compositor()   // not lazy: touched from both the render and dashboard queues
     private let rq = DispatchQueue(label: "vr4.render", qos: .userInteractive)
     /// Dashboard state, CoreGraphics drawing and texture upload live here so the render queue never waits on them.
@@ -150,10 +152,12 @@ final class Engine: ObservableObject {
             }
         }
         settings.onChange = { [weak self] in self?.rq.async { self?.applySettings() } }
+        #if MACVR_DEV   // hand tuner web page: developer builds only
         tuner.rebuild = { [weak self] in self?.rq.async { self?.comp.rebuildHands() } }
         tuner.setPose = { [weak self] p in self?.rq.async { self?.comp.demoPose = p } }
         tuner.model = { [weak self] in self?.comp.shownControllerModel ?? .quest2 }
         if !Engine.offline { tuner.start() }
+        #endif
         games.onUpdate = { [weak self] in self?.requestDraw() }
         dash.windowJump = { [weak self] in self?.rq.async { self?.comp.jump() } }
         dash.launch = { [weak self] g in
@@ -266,7 +270,7 @@ final class Engine: ObservableObject {
                 DispatchQueue.main.async { self?.games.status = "Setup failed: \(error.localizedDescription)" }
             }
         } }
-        if !Engine.offline { link.start() }
+        if !Engine.offline { link.start(wifi: settings.bool("wifi_play")) }
         rq.async { self.applySettings() }
 
         // game frames + haptics from the Wine runtime; ponytail: 1 ms poll, swap for a semaphore if CPU matters
@@ -410,13 +414,18 @@ final class Engine: ObservableObject {
 
     private func applySettings() {
         applyControllers()
+        if !Engine.offline { link.setWiFi(settings.bool("wifi_play")) }
         let quest = settings["menu_style"] != "SteamVR"   // Quest: a small window at arm's length, dock down by the hands
         let touch = settings.bool("direct_touch"), compact = quest && touch
         directTouch = touch
         comp.setLayout(quest: quest, compact: compact)
         let radii: [String: Float] = compact ? ["NEAR": 0.7, "MIDDLE": 0.85, "FAR": 1.0] : quest ? ["NEAR": 1.5, "MIDDLE": 1.8, "FAR": 2.2] : ["NEAR": 1.3, "MIDDLE": 1.8, "FAR": 2.5]
         comp.setRadius(radii[settings["dashboard_position"]] ?? radii["NEAR"]!)
+        #if MACVR_DEV
         comp.setEnvironment(ProcessInfo.processInfo.environment["VR4_ENV"] ?? settings["environment"])   // VR4_ENV: README renders
+        #else
+        comp.setEnvironment(settings["environment"])
+        #endif
         comp.setHomeStyle(settings["home_style"])
         comp.setCurved(settings.bool("ui_curved"))
         comp.showArms = settings.bool("show_arms")
@@ -435,6 +444,7 @@ final class Engine: ObservableObject {
     private func sendConfig() {
         guard !config.isEmpty else { return }
         var c = config; c["mic"] = helloMic && Mic.shared.useHeadset
+        if link.wired { c["pair"] = Link.pairToken }   // USB pairs the headset for Wi-Fi play
         link.sendJSON(Int32(VR4_CONFIG), c)
     }
 
@@ -1032,6 +1042,7 @@ final class Engine: ObservableObject {
         return pb
     }
 
+    #if MACVR_DEV   // offline renders and the encoder self-test: developer builds only
     // MARK: self-test: render one frame with a fake headset pose, save PNG, encode, check NAL types
     func snapshot(to path: String) {
         let hevc = ProcessInfo.processInfo.environment["VR4_HEVC"] == "1"
@@ -1133,4 +1144,5 @@ final class Engine: ObservableObject {
         if hevc { assert(nals.first == 32 && nals.contains(33) && nals.contains(34) && nals.contains { $0 == 19 || $0 == 20 }, "HEVC IDR must start with VPS, SPS, PPS") }
         else { assert(nals.first == 7 && nals.contains(8) && nals.contains(5), "IDR must start with SPS, PPS") }
     }
+    #endif
 }

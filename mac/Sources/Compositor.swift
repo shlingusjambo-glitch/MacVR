@@ -218,7 +218,7 @@ final class Compositor {
         let v = headLocal - n.simdPosition
         n.simdEulerAngles = SIMD3(atan2(-v.y, v.z) + extraTilt, 0, 0)
         n.simdScale = SIMD3(repeating: scale)
-        bend[ObjectIdentifier(panel)] = simd_length(v) / scale
+        bend[ObjectIdentifier(panel)] = simd_length(v) / scale * 2.5   // a gentle Quest-style curve, not a wrap around the eyes
     }
     private var questLayout = true, compact = true
     private var bend: [ObjectIdentifier: Float] = [:]
@@ -287,8 +287,8 @@ final class Compositor {
         guard let model, let part else { tourRoot.isHidden = true; return }
         if tourRoot.parent == nil { winContent.addChildNode(tourRoot) }
         tourRoot.isHidden = false
-        // stage: left part of the tour window (canvas box x 194..754, y 132..692), a little in front of the panel
-        let m = metersPerPx, cx = (474 - Float(Dashboard.W) / 2) * m, cy = (Float(Dashboard.SPLIT) / 2 - 412) * m
+        // stage: left part of the tour window (canvas box x 194..754, y 132..692; centred a bit high to clear the label), a little in front of the panel
+        let m = metersPerPx, cx = (474 - Float(Dashboard.W) / 2) * m, cy = (Float(Dashboard.SPLIT) / 2 - 385) * m
         let z: Float = Compositor.curved ? radius - radius * cos(cx / radius) + 0.16 : 0.16
         tourRoot.simdPosition = SIMD3(Compositor.curved ? radius * sin(cx / radius) : cx, cy, z)
         tourRoot.simdEulerAngles = SIMD3(0, Compositor.curved ? -cx / radius : 0, 0)
@@ -301,7 +301,8 @@ final class Compositor {
             let (lo, hi) = n.boundingBox
             tourCenter = SIMD3(Float(lo.x + hi.x) / 2, Float(lo.y + hi.y) / 2, Float(lo.z + hi.z) / 2)
             let size = simd_length(SIMD3(Float(hi.x - lo.x), Float(hi.y - lo.y), Float(hi.z - lo.z)))
-            n.simdScale = SIMD3(repeating: 0.8 / max(size, 0.01))   // ~80 cm across on the stage
+            n.simdScale = SIMD3(repeating: 0.6 / max(size, 0.01))   // ~60 cm across on the stage
+            n.enumerateHierarchy { c, _ in c.renderingOrder = 15 }   // after the window panel (10), or it paints over the controller
             tourRoot.addChildNode(n); tourCtl = n; tourModel = model; tourPart = "-"
         }
         guard part != tourPart, let n = tourCtl else { return }
@@ -362,7 +363,7 @@ final class Compositor {
         if space.geometry == nil {
             let g = SCNSphere(radius: 100); g.segmentCount = 96   // well inside the 300 m far plane, or the home leaks through
             let m = g.firstMaterial!; m.diffuse.contents = Compositor.starfield(); m.lightingModel = .constant
-            m.cullMode = .back; m.writesToDepthBuffer = false; m.readsFromDepthBuffer = false
+            m.cullMode = .front; m.writesToDepthBuffer = false; m.readsFromDepthBuffer = false
             m.diffuse.contentsTransform = SCNMatrix4MakeScale(-1, 1, 1); m.diffuse.wrapS = .repeat   // seen from inside
             space.geometry = g; space.renderingOrder = -150; space.isHidden = true
             scene.rootNode.addChildNode(space)
@@ -388,7 +389,7 @@ final class Compositor {
     static func skySphere(radius: CGFloat) -> SCNNode {
         let g = SCNSphere(radius: radius); g.segmentCount = 96
         let m = g.firstMaterial!; m.lightingModel = .constant
-        m.cullMode = .back; m.writesToDepthBuffer = false; m.readsFromDepthBuffer = false
+        m.cullMode = .front; m.writesToDepthBuffer = false; m.readsFromDepthBuffer = false
         m.diffuse.contentsTransform = SCNMatrix4MakeScale(-1, 1, 1); m.diffuse.wrapS = .repeat   // seen from inside
         let n = SCNNode(geometry: g); n.simdEulerAngles = SIMD3(0, skyYaw, 0); return n
     }
@@ -476,7 +477,7 @@ final class Compositor {
         guard !reduceMotion else { return }
         if veil.geometry == nil {   // a small black sphere around the eyes, drawn over everything
             let g = SCNSphere(radius: 0.3); g.segmentCount = 24
-            let m = g.firstMaterial!; m.diffuse.contents = NSColor.black; m.lightingModel = .constant; m.cullMode = .back
+            let m = g.firstMaterial!; m.diffuse.contents = NSColor.black; m.lightingModel = .constant; m.cullMode = .front
             m.writesToDepthBuffer = false; m.readsFromDepthBuffer = false
             veil.geometry = g; veil.renderingOrder = 1000; scene.rootNode.addChildNode(veil)
         }
@@ -734,6 +735,7 @@ final class Compositor {
         guard homeStyle != style else { return }
         homeStyle = style; homeOffset = .zero
         homeArchitecture.childNodes.forEach { $0.removeFromParentNode() }
+        homeArchitecture.name = "MacVR Home Architecture"
         if homeArchitecture.parent == nil { scene.rootNode.addChildNode(homeArchitecture) }
         if let model = ControllerGLB.home(style == "Kleeblatt" ? "kleeblatt" : "room1107") { homeArchitecture.addChildNode(model) }
         homeArchitecture.simdPosition = .zero; homeArchitecture.isHidden = homeOccluded

@@ -1,5 +1,15 @@
 # Changes
 
+## 1.3.0
+
+- Wi-Fi play is back. MacVR never broadcasts: it waits, and the Quest app asks for it on the local network once a second. A headset must be connected over USB once to pair before it can connect over Wi-Fi (Settings > General > Wi-Fi Play).
+- Quest-style menu: gentler panel curve, seamless windows without the title strip, larger Quick Settings tiles in a 3 x 2 grid.
+- Big custom skin-tone picker under Settings > Experimental > Skin tone.
+- Help > Export Diagnostics… saves the app log, runtime logs, settings and versions as one zip for bug reports.
+- GitHub issue templates.
+- Welcome tour: the 3D controller shows again, and the space backdrop, sky crossfades and fade-to-home no longer disappear.
+- Release builds leave out developer tools (hand tuner web page, offline render modes).
+
 ## 1.2.3
 
 - Thumbstick scrolling over UI takes priority over teleport; scroll gestures remain reserved until the stick returns to neutral.

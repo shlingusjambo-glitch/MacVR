@@ -176,9 +176,9 @@ import SceneKit
         }
         let idle = cursor(0, tracked: true, ray: 1)
         assert(simd_distance(idle.simdWorldPosition, SIMD3(0.2, 1.3, -1.198)) < 0.001, "at the hit \(idle.simdWorldPosition)")
-        assert(abs(idle.simdScale.x - 0.02) < 1e-4 && idle.childNodes[0].simdScale.x == 1, "1 m: 2 cm, ring open")
+        assert(abs(idle.simdScale.x - 0.06) < 1e-4 && idle.childNodes[0].simdScale.x == 1, "1 m: 6 cm, ring open")
         let near = cursor(0.25, tracked: true, ray: 2)
-        assert(abs(near.simdScale.x - 0.04) < 1e-4, "constant angle: twice as far, twice as big")
+        assert(abs(near.simdScale.x - 0.12) < 1e-4, "constant angle: twice as far, twice as big")
         assert(abs(near.childNodes[0].simdScale.x - 0.825) < 1e-3 && near.childNodes[1].simdScale.x < 0.4, "half way to a pinch: ring closing, not filled")
         let pinched = cursor(1, tracked: true, ray: 1)
         assert(abs(pinched.childNodes[0].simdScale.x - 0.65) < 1e-3 && pinched.childNodes[1].simdScale.x > 0.6, "pinched: filled")

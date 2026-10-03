@@ -18,11 +18,7 @@ final class HandModel {
     private let wristPos: SIMD3<Float>
     /// Reveal the original mesh beyond its wrist instead of fading it away.
     var showArms = false { didSet { if showArms != oldValue { apply() } } }
-    static func skinColor(_ name: String) -> NSColor {
-        let tones: [String: (CGFloat, CGFloat, CGFloat)] = ["Light": (0.96, 0.77, 0.64), "Medium": (0.80, 0.57, 0.40), "Tan": (0.65, 0.40, 0.25), "Brown": (0.43, 0.24, 0.14), "Deep": (0.24, 0.12, 0.08)]
-        let rgb = tones[name] ?? (0.17, 0.18, 0.2)
-        return NSColor(srgbRed: rgb.0, green: rgb.1, blue: rgb.2, alpha: 1)
-    }
+    static func skinColor(_ name: String) -> NSColor { Settings.skinColor(name) }
     var skinTone = "Original" { didSet { if skinTone != oldValue { applyLook() } } }
     var showTorso = false { didSet { if showTorso != oldValue { apply() } } }
     private(set) var posedVertices: [SIMD3<Float>] = []

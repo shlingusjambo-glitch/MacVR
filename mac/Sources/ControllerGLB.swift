@@ -6,7 +6,8 @@ import simd
 enum ControllerGLB {
     private static var cache: [String: SCNNode] = [:]
     static func node(_ model: HeadsetModel, hand: Int) -> SCNNode? {
-        let profile = ["oculus-touch-v2", "oculus-touch-v3", "meta-quest-touch-plus"][model.rawValue]
+        // Steam Frame emulates Touch (see HeadsetModel.controllerMesh): map before indexing (rawValue 3 would trap).
+        let profile = ["oculus-touch-v2", "oculus-touch-v3", "meta-quest-touch-plus"][model.controllerMesh.rawValue]
         let side = hand == 0 ? "left" : "right"
         let key = profile + "/" + side
         if let cached = cache[key] { return cached.clone() }

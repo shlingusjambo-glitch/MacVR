@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// MACVR_HOME (tests only): run as a brand-new user, with the Wine wrapper and app data under that folder.
@@ -25,7 +26,9 @@ final class Settings: ObservableObject {
         ("General", [Item(key: "render_scale", label: "Render Resolution", options: ["50%", "75%", "100%", "125%", "150%"], def: "100%",
                           info: "Sharper games at higher values, smoother frame rates at lower ones. Applies when you reconnect."),
                      Item(key: "refresh_rate", label: "Headset Refresh Rate", options: ["72", "80", "90"], def: "72",
-                          info: "Frames per second on the headset. Higher feels smoother and needs a faster Mac.")]),
+                          info: "Frames per second on the headset. Higher feels smoother and needs a faster Mac."),
+                     Item(key: "wifi_play", label: "Wi-Fi Play", options: offOn, def: "On",
+                          info: "Play without the cable. Connect the headset with USB once to pair it; after that, open MacVR on the Quest on the same network and it finds this Mac by itself. macOS must allow MacVR under Privacy & Security > Local Network.")]),
         ("Play Area", [Item(key: "home_style", label: "3D Home", options: ["Room 1107", "Kleeblatt"], def: "Room 1107",
                             info: "Choose a fully modeled home. Hold a controller stick forward to aim a teleport, then release to move."),
                        Item(key: "floor_grid", label: "Show Floor Grid", options: offOn, def: "On", info: "A subtle grid on the floor of your home."),
@@ -84,8 +87,18 @@ final class Settings: ObservableObject {
     func bool(_ k: String) -> Bool { self[k] == "On" }
     func int(_ k: String) -> Int { Int(self[k].trimmingCharacters(in: CharacterSet(charactersIn: "%"))) ?? 0 }
 
+    /// Hands/arms colour for a Skin tone preset or a picked "#RRGGBB" (Original: the default grey).
+    static func skinColor(_ name: String) -> NSColor {
+        let tones: [String: (CGFloat, CGFloat, CGFloat)] = ["Light": (0.96, 0.77, 0.64), "Medium": (0.80, 0.57, 0.40), "Tan": (0.65, 0.40, 0.25), "Brown": (0.43, 0.24, 0.14), "Deep": (0.24, 0.12, 0.08)]
+        if name.hasPrefix("#"), let v = UInt32(name.dropFirst(), radix: 16) {   // custom tone from the skin picker
+            return NSColor(srgbRed: CGFloat(v >> 16 & 255) / 255, green: CGFloat(v >> 8 & 255) / 255, blue: CGFloat(v & 255) / 255, alpha: 1)
+        }
+        let rgb = tones[name] ?? (0.17, 0.18, 0.2)
+        return NSColor(srgbRed: rgb.0, green: rgb.1, blue: rgb.2, alpha: 1)
+    }
     func set(_ k: String, _ v: String) {
-        guard Settings.items[k]?.options.contains(v) == true else { return }
+        let customSkin = k == "avatar_skin" && v.count == 7 && v.hasPrefix("#") && UInt32(v.dropFirst(), radix: 16) != nil   // skin picker: #RRGGBB
+        guard customSkin || Settings.items[k]?.options.contains(v) == true else { return }
         let apply = { [self] in
             lock.lock(); values[k] = v; let snap = values; lock.unlock()
             try? JSONEncoder().encode(snap).write(to: url)

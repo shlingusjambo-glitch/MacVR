@@ -1,3 +1,4 @@
+#if MACVR_DEV   // developer builds only (mac/build.sh); release builds leave the hand tuner out
 import Foundation
 import Network
 import SceneKit
@@ -270,3 +271,4 @@ const st=await (await fetch("/state")).json();model=st.current;pose=st.pose;bone
 </script></body></html>
 """
 }
+#endif

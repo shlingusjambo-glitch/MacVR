@@ -6,18 +6,14 @@ import simd
     static func main() {
         setvbuf(stdout, nil, _IONBF, 0)
         let comp = Compositor()
-        comp.setHomeStyle("Pavilion")
+        comp.setHomeStyle("Room 1107")
         let architecture = comp.scene.rootNode.childNode(withName: "MacVR Home Architecture", recursively: false)!
         let count = architecture.childNodes.count
-        assert(count > 15 && count < 50, "bounded 3D home geometry")
-        comp.setHomeStyle("Pavilion")
+        assert(count == 1, "one 3D home model")
+        comp.setHomeStyle("Room 1107")
         assert(architecture.childNodes.count == count, "same style does not duplicate nodes")
-        comp.setHomeStyle("Observatory")
-        assert(architecture.childNodes.count > 10 && architecture.childNodes.count < 40, "observatory geometry")
-        comp.setHomeStyle("Open vista")
-        assert(architecture.parent == nil && architecture.childNodes.isEmpty, "open vista removes architecture")
-        comp.setHomeStyle("Pavilion")
-        assert(architecture.parent != nil && architecture.childNodes.count == count, "style can be restored")
+        comp.setHomeStyle("Kleeblatt")
+        assert(architecture.childNodes.count == 1, "switching replaces the model")
         comp.setLayout(quest: true, compact: true); comp.setRadius(0.7)
         comp.place(head: VR4Pose(px: 0, py: 1.6, pz: 0, qx: 0, qy: 0, qz: 0, qw: 1))
         comp.setDashVisible(true)

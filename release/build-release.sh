@@ -42,7 +42,7 @@ fi
 JAVAC="$JAVAC" ./SiliconXR-Mod/build.sh
 
 echo "== MacVR.app =="
-./mac/build.sh
+MACVR_RELEASE=1 ./mac/build.sh
 
 echo "== Quest APK =="
 if [ -z "$APK" ]; then APK="android/VR4Mac.apk"; fi

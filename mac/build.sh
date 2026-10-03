@@ -4,7 +4,9 @@ set -e
 cd "$(dirname "$0")"
 APP=build/VR4Mac.app
 mkdir -p $APP/Contents/MacOS $APP/Contents/Resources
-swiftc -O -parse-as-library -import-objc-header ../common/vr4mac.h Sources/*.swift -o $APP/Contents/MacOS/VR4Mac
+# Developer tools (hand tuner, --snapshot/--orbit renders) are compiled in unless MACVR_RELEASE=1 (release/build-release.sh).
+DEV=$([ "${MACVR_RELEASE:-0}" = 1 ] || echo "-D MACVR_DEV")
+swiftc -O $DEV -parse-as-library -import-objc-header ../common/vr4mac.h Sources/*.swift -o $APP/Contents/MacOS/VR4Mac
 cp Info.plist $APP/Contents/
 # Record bundled runtime versions so a newer app cannot be shadowed by an older downloaded runtime.
 for component in WineXR SiliconXR; do

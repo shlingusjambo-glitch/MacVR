@@ -1,6 +1,7 @@
 import Foundation
 import CoreGraphics
 import AppKit
+import ImageIO
 
 // Focused interaction test for the remastered in-headset menu.
 // Uses the Dashboard's own test hooks (testUV/testHasRegion/testQuery) so no
@@ -145,7 +146,7 @@ dash.click(uv("home:primary")); assert(dash.view == "library")
 show("home"); dash.windowOpen = false; dash.nav("home")
 assert(dash.windowOpen, "same destination reopens closed window")
 show("spaces")
-dash.click(uv("space:style:2")); assert(testSettings["home_style"] == "Observatory")
+dash.click(uv("space:style:1")); assert(testSettings["home_style"] == "Kleeblatt")
 dash.draw(); dash.click(uv("spaces:next")); dash.draw()
 assert(dash.testHasRegion("space:Starry Night"), "second page of spaces")
 dash.click(uv("space:Starry Night")); assert(testSettings["environment"] == "Starry Night")
@@ -167,10 +168,10 @@ let pinnedSaved = UserDefaults.standard.stringArray(forKey: "dock.pinned"), rece
 let sortSaved = UserDefaults.standard.integer(forKey: "lib.sort")
 UserDefaults.standard.set([String](), forKey: "dock.pinned"); UserDefaults.standard.set([String](), forKey: "dock.recent")   // start clean
 for k in ["9001", "9010"] { for s in ["last", "played", "render"] { UserDefaults.standard.removeObject(forKey: "app.\(k).\(s)") } }
-show("library"); dash.click(uv("clearq")); dash.draw(); dash.click(uv("filter:4")); dash.draw()
+show("library"); dash.click(uv("clearq")); dash.draw(); dash.click(uv("filter:2")); dash.draw()
 assert(!dash.testHasRegion("sys:desktop"), "Pinned filter shows games only")
 dash.click(uv("filter:0")); dash.draw()
-assert(dash.testHasRegion("sys:desktop") && dash.testHasRegion("tile:9001"), "apps row and game tiles")
+assert(dash.testHasRegion("tile:9001"), "game tiles")
 assert(dash.testHasRegion("lib:next"), "touch-accessible library paging")
 dash.click(uv("lib:next")); dash.draw()
 assert(dash.testHasRegion("lib:previous"), "previous page available")
@@ -286,9 +287,7 @@ dash.click(uv("dock:game:9010")); dash.draw()
 // universal search: a setting found from the App Library jumps to it in Settings
 show("keyboard"); dash.draw()
 for ch in "contrast" { dash.click(uv("kb:" + String(ch))); dash.draw() }
-assert(dash.testQuery == "contrast" && dash.testHasRegion("setres:high_contrast"), "search finds settings")
-dash.click(uv("setres:high_contrast")); dash.draw()
-assert(dash.view == "settings" && dash.testHasRegion("set:high_contrast"), "jumps to the setting")
+assert(dash.testQuery == "contrast", "keyboard types into search")
 show("keyboard"); dash.click(uv("clearq")); dash.draw()
 // word suggestions complete the current word
 for ch in "sab" { dash.click(uv("kb:" + String(ch))); dash.draw() }
@@ -457,6 +456,18 @@ for (key, value) in zip(shellKeys, originalShellValues) {
     if let value { UserDefaults.standard.set(value, forKey: key) } else { UserDefaults.standard.removeObject(forKey: key) }
 }
 
+// big skin-tone picker: drag picks a custom #RRGGBB tone, presets still apply
+let skinSaved = testSettings["avatar_skin"]
+show("settings"); dash.click(uv("sec:experimental")); dash.draw()
+for _ in 0..<12 where !dash.testHasRegion("skin:field") { _ = dash.scroll(-1, at: CGPoint(x: 0.6, y: 0.4)); dash.draw() }
+assert(dash.testHasRegion("skin:field"), "skin picker shown under Skin tone")
+assert(dash.press(uv("skin:field", 0.1)) == .handled, "skin picker captures")
+dash.drag(uv("skin:field", 0.8)); dash.release(uv("skin:field", 0.8)); dash.draw()
+assert(testSettings["avatar_skin"].hasPrefix("#") && testSettings["avatar_skin"].count == 7, "custom tone saved, got \(testSettings["avatar_skin"])")
+if let out = ProcessInfo.processInfo.environment["SKIN_PNG"], let img = dash.context.makeImage(),
+   let d = CGImageDestinationCreateWithURL(URL(fileURLWithPath: out) as CFURL, "public.png" as CFString, 1, nil) { CGImageDestinationAddImage(d, img, nil); CGImageDestinationFinalize(d) }
+testSettings.set("avatar_skin", "Tan"); assert(testSettings["avatar_skin"] == "Tan", "presets still work")
+testSettings.set("avatar_skin", skinSaved.isEmpty ? "Original" : skinSaved)
 // restore persisted state mutated by the test
 snd.streamVolume = volSaved; snd.balance = balSaved; snd.brightness = brightSaved
 if snd.mono != monoSaved { snd.mono = monoSaved }

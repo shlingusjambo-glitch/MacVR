@@ -1,0 +1,16 @@
+name: Feature request
+description: Suggest an idea for MacVR
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like?
+      description: Describe the feature and the problem it solves.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else?
+      description: Screenshots, examples from other VR apps, games it would help with.

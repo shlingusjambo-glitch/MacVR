@@ -1,0 +1,52 @@
+name: Bug report
+description: Something in MacVR, the Quest app, WineXR or SiliconXR doesn't work
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please attach a diagnostics zip: in MacVR on your Mac choose **Help > Export Diagnostics…**
+        (it contains the app log, runtime logs, settings and versions; nothing is uploaded until you attach it here).
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open MacVR and connect the headset over USB
+        2. Launch ...
+        3. ...
+  - type: dropdown
+    id: part
+    attributes:
+      label: Which part?
+      options: [MacVR menu / home, Game launch or Steam, Video or audio streaming, Controllers or hand tracking, Wi-Fi play, Minecraft (SiliconXR), Other]
+    validations:
+      required: true
+  - type: dropdown
+    id: connection
+    attributes:
+      label: Connection
+      options: [USB, Wi-Fi]
+  - type: input
+    id: game
+    attributes:
+      label: Game (if any)
+      placeholder: e.g. Beat Saber
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: MacVR version (MacVR > About), headset model, macOS version and Mac model. The diagnostics zip has these too.
+      placeholder: MacVR 1.3.0, Quest 3, macOS 27.0, MacBook Pro M3
+  - type: textarea
+    id: logs
+    attributes:
+      label: Diagnostics zip and screenshots
+      description: Drag the zip from Help > Export Diagnostics… and any headset screenshots here.

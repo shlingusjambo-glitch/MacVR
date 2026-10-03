@@ -1,7 +1,9 @@
 import Foundation
 import Network
 
-/// TCP link to the Quest app (wire protocol in common/vr4mac.h), UDP discovery broadcast and adb reverse for USB.
+/// TCP link to the Quest app (wire protocol in common/vr4mac.h). USB: adb reverse to loopback. Wi-Fi: the Mac never
+/// broadcasts; the Quest sends "VR4MAC?" to UDP 9944 every second, we answer that one sender, and it connects. A Wi-Fi
+/// headset must present the pairing token it was given over USB before it can stream or send input.
 final class Link {
     var onHello: ([String: Any]) -> Void = { _ in }
     /// Tracking + each hand's 26 OpenXR joints while it is hand-tracked (nil = holding a controller / not seen).
@@ -15,24 +17,57 @@ final class Link {
     private(set) var connected = false
     private(set) var peer = ""
     /// USB: the Quest reaches us through adb reverse, so the peer is loopback.
-    var wired: Bool { peer.contains("127.0.0.1") || peer == "::1" }
+    var wired: Bool { Link.isLoopback(peer) }
     private var conn: NWConnection?
     private var inFlight = 0
     private let q = DispatchQueue(label: "vr4.link")
     private var listener: NWListener?
     private let usbQueue = DispatchQueue(label: "vr4.usb", qos: .utility)
     private var usbPending = false
+    /// Accept headsets on the local network (Settings > Wi-Fi play). Off: loopback (USB) only.
+    private(set) var wifi = false
+    private var probe: DispatchSourceRead?
+    static var pairToken: String {
+        if let t = UserDefaults.standard.string(forKey: "link.pair_token"), t.count == 32 { return t }
+        let t = (0..<16).map { _ in String(format: "%02x", UInt8.random(in: 0...255)) }.joined()
+        UserDefaults.standard.set(t, forKey: "link.pair_token"); return t
+    }
+    static func isLoopback(_ host: String) -> Bool { host.contains("127.0.0.1") || host == "::1" }
+    /// A Wi-Fi headset's first packet: a HELLO carrying this Mac's pairing token (handed over on USB).
+    static func paired(_ type: UInt8, _ body: Data) -> Bool {
+        guard Int(type) == VR4_HELLO, let j = try? JSONSerialization.jsonObject(with: body) as? [String: Any], let t = j["token"] as? String else { return false }
+        return t == pairToken
+    }
     private let port: UInt16
 
     init(port: UInt16 = UInt16(VR4_PORT_TCP)) { self.port = port }
 
-    func start(discovery: Bool = true) {
+    func start(discovery: Bool = true, wifi: Bool = false) {
+        self.wifi = wifi
+        listen()
+        guard discovery else { return }
+        let t = DispatchSource.makeTimerSource(queue: q)
+        t.schedule(deadline: .now(), repeating: 1)
+        var n = 0
+        t.setEventHandler { [weak self] in
+            if n % 5 == 0, self?.connected == false { self?.retryUSB() }
+            n += 1
+        }
+        t.resume()
+        timer = t
+    }
+    /// Turn Wi-Fi play on or off while running: restarts the listener (a USB session stays connected).
+    func setWiFi(_ on: Bool) { q.async { [self] in guard on != wifi else { return }; wifi = on; listener?.cancel(); listen() } }
+    private func listen() {
         let tcp = NWProtocolTCP.Options(); tcp.noDelay = true
+        probe?.cancel(); probe = nil
         do {
-            // loopback only: the Quest reaches it over USB (adb reverse); nothing on the LAN can connect
             let params = NWParameters(tls: nil, tcp: tcp)
-            params.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!)
-            listener = try NWListener(using: params)
+            if wifi { answerProbes(); listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!) }   // every interface
+            else {   // USB only
+                params.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!)
+                listener = try NWListener(using: params)
+            }
         } catch {
             onIssue("Cannot listen for a headset: \(error.localizedDescription). Close other MacVR instances and reopen the app.")
             return
@@ -46,19 +81,26 @@ final class Link {
         }
         listener?.newConnectionHandler = { [weak self] c in self?.accept(c) }
         listener?.start(queue: q)
-        guard discovery else { return }
-        let t = DispatchSource.makeTimerSource(queue: q)
-        t.schedule(deadline: .now(), repeating: 1)
-        var n = 0
-        t.setEventHandler { [weak self] in
-            // Unnecessary LAN traffic: discovery should use an incoming device
-            // registration server instead of broadcasting to every network device.
-            // self?.broadcast()
-            if n % 5 == 0, self?.connected == false { self?.retryUSB() }
-            n += 1
+    }
+    /// Answers a Quest's "VR4MAC?" probe (UDP 9944) with "VR4MAC 9945", to that sender only.
+    private func answerProbes() {
+        let s = socket(AF_INET, SOCK_DGRAM, 0)
+        guard s >= 0 else { return }
+        var yes: Int32 = 1; setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
+        var a = sockaddr_in(); a.sin_family = sa_family_t(AF_INET); a.sin_port = UInt16(VR4_PORT_DISCOVERY).bigEndian; a.sin_addr.s_addr = INADDR_ANY
+        guard withUnsafePointer(to: &a, { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(s, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }) == 0 else {
+            close(s); onIssue("Wi-Fi play: UDP port \(VR4_PORT_DISCOVERY) is busy. Close other MacVR instances."); return
         }
-        t.resume()
-        timer = t
+        let src = DispatchSource.makeReadSource(fileDescriptor: s, queue: q)
+        src.setEventHandler {
+            var buf = [UInt8](repeating: 0, count: 64), from = sockaddr_in(), len = socklen_t(MemoryLayout<sockaddr_in>.size)
+            let n = withUnsafeMutablePointer(to: &from) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { recvfrom(s, &buf, buf.count, 0, $0, &len) } }
+            guard n > 0, String(decoding: buf[0..<n], as: UTF8.self) == "VR4MAC?" else { return }
+            let reply = "VR4MAC \(VR4_PORT_TCP)"
+            _ = withUnsafePointer(to: &from) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { sendto(s, reply, reply.utf8.count, 0, $0, len) } }
+        }
+        src.setCancelHandler { close(s) }
+        src.resume(); probe = src
     }
     private var timer: DispatchSourceTimer?
 
@@ -75,6 +117,28 @@ final class Link {
     }
 
     private func accept(_ c: NWConnection) {
+        var host = ""
+        if case .hostPort(let h, _) = c.endpoint { host = "\(h)" }
+if Link.isLoopback(host) { promote(c); return }
+        guard wifi else { NSLog("VR4Mac: Wi-Fi play is off; refused %@", host); c.cancel(); return }
+        // Wi-Fi: the first packet must be a HELLO carrying the USB pairing token, before it can replace anything
+        c.stateUpdateHandler = { s in if case .failed(let e) = s { NSLog("VR4Mac: Wi-Fi headset at %@ failed: %@", host, "\(e)") } }
+        c.start(queue: q)
+        let timeout = DispatchWorkItem { [weak c] in c?.cancel() }
+        q.asyncAfter(deadline: .now() + 5, execute: timeout)
+        readOne(c) { [weak self] type, body in
+            timeout.cancel()
+            guard let self, Link.paired(type, body) else {
+                NSLog("VR4Mac: refused a Wi-Fi headset at %@ (not paired over USB)", host)
+                self?.onIssue("A headset on Wi-Fi tried to connect but isn't paired. Connect it once with USB to pair it.")
+                c.cancel(); return
+            }
+            self.promote(c, started: true)
+            self.handle(type, body)
+            self.readPacket(c)
+        }
+    }
+    private func promote(_ c: NWConnection, started: Bool = false) {
         if let previous = conn {
             previous.cancel()
             onDisconnect()
@@ -90,24 +154,26 @@ final class Link {
             default: break
             }
         }
-        c.start(queue: q)
-        readPacket(c)
+        if started { connected = true; onIssue("") } else { c.start(queue: q); readPacket(c) }
     }
 
     private func readPacket(_ c: NWConnection) {
-        c.receive(minimumIncompleteLength: 5, maximumLength: 5) { [weak self] h, _, done, err in
-            guard let self, let h, h.count == 5, err == nil else { c.cancel(); return }
+        readOne(c) { [weak self] type, body in
+            guard let self, c === self.conn else { return }   // stale connection replaced by a newer one
+            self.handle(type, body)
+            self.readPacket(c)
+        }
+    }
+    /// One packet: 1-byte type, little-endian u32 length, payload. Any error or close cancels the connection.
+    private func readOne(_ c: NWConnection, _ got: @escaping (UInt8, Data) -> Void) {
+        c.receive(minimumIncompleteLength: 5, maximumLength: 5) { h, _, done, err in
+            guard let h, h.count == 5, err == nil, !done else { c.cancel(); return }
             let type = h[h.startIndex], len = Int(h.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 1, as: UInt32.self) })
             guard len <= Int(VR4_MAX_PAYLOAD) else { c.cancel(); return }
-            let handle = { (body: Data) in
-                guard c === self.conn else { return }   // stale connection replaced by a newer one
-                self.handle(type, body)
-                if done { c.cancel() } else { self.readPacket(c) }
-            }
-            if len == 0 { handle(Data()); return }
+            if len == 0 { got(type, Data()); return }
             c.receive(minimumIncompleteLength: len, maximumLength: len) { b, _, _, err in
                 guard let b, b.count == len, err == nil else { c.cancel(); return }
-                handle(b)
+                got(type, b)
             }
         }
     }
@@ -152,23 +218,6 @@ final class Link {
     }
 
     func sendJSON(_ type: Int32, _ obj: [String: Any]) { send(type, (try? JSONSerialization.data(withJSONObject: obj)) ?? Data()) }
-
-    private lazy var udp: Int32 = {
-        let s = socket(AF_INET, SOCK_DGRAM, 0)
-        var yes: Int32 = 1
-        setsockopt(s, SOL_SOCKET, SO_BROADCAST, &yes, socklen_t(MemoryLayout<Int32>.size))
-        return s
-    }()
-    private func broadcast() {
-        var a = sockaddr_in()
-        a.sin_family = sa_family_t(AF_INET)
-        a.sin_port = UInt16(VR4_PORT_DISCOVERY).bigEndian
-        a.sin_addr.s_addr = INADDR_BROADCAST
-        let msg = "VR4MAC \(VR4_PORT_TCP)"
-        _ = withUnsafePointer(to: &a) { p in
-            p.withMemoryRebound(to: sockaddr.self, capacity: 1) { sendto(udp, msg, msg.utf8.count, 0, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
-        }
-    }
 }
 
 let adbPath = ["/opt/homebrew/bin/adb", NSHomeDirectory() + "/Library/Android/sdk/platform-tools/adb", "/usr/local/bin/adb"]

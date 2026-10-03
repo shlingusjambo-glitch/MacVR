@@ -1,6 +1,7 @@
 import SwiftUI
 import SceneKit
 import AppKit
+import UniformTypeIdentifiers
 
 @main
 struct VR4MacApp: App {
@@ -17,6 +18,7 @@ struct VR4MacApp: App {
             do { try g.setup(); print("setup OK, wine: \(Games.wine ?? "missing")"); exit(0) }
             catch { print("setup FAILED: \(error.localizedDescription)"); exit(1) }
         }
+        #if MACVR_DEV   // video/README renders: developer builds only
         if let i = CommandLine.arguments.firstIndex(of: "--orbit") {   // video renders: Quest 2 controller turntable, transparent PNGs
             let out = CommandLine.arguments[i + 1], n = Int(CommandLine.arguments[i + 2])!, hand = Int(CommandLine.arguments[i + 3]) ?? 0
             let headset = hand == 2   // 2 = the headset
@@ -37,6 +39,7 @@ struct VR4MacApp: App {
         if let i = CommandLine.arguments.firstIndex(of: "--snapshot") {
             Engine().snapshot(to: CommandLine.arguments[i + 1]); exit(0)
         }
+        #endif
     }
 
     var body: some Scene {
@@ -46,6 +49,40 @@ struct VR4MacApp: App {
             .windowStyle(.hiddenTitleBar).windowResizability(.contentSize)
         Window("VR View", id: "vrview") { VRViewWindow(engine: engine).frame(minWidth: 320, minHeight: 320) }
             .defaultSize(width: 640, height: 700)
+            .commands { CommandGroup(after: .help) { Button("Export Diagnostics…") { Diagnostics.export() } } }
+    }
+}
+
+/// Help > Export Diagnostics: the app log, the WineXR/SiliconXR runtime logs, settings and versions in one zip to attach
+/// to a GitHub issue. Nothing is uploaded; the user picks where the zip goes.
+enum Diagnostics {
+    static func export() {
+        let df = DateFormatter(); df.dateFormat = "yyyy-MM-dd HH.mm"
+        let panel = NSSavePanel(); panel.nameFieldStringValue = "MacVR Diagnostics \(df.string(from: Date())).zip"; panel.allowedContentTypes = [.zip]
+        guard panel.runModal() == .OK, let out = panel.url else { return }
+        do { try write(to: out); NSWorkspace.shared.activateFileViewerSelecting([out]) }
+        catch { let a = NSAlert(); a.messageText = "Couldn't export diagnostics"; a.informativeText = error.localizedDescription; a.runModal() }
+    }
+    static func write(to out: URL) throws {
+        let fm = FileManager.default, dir = fm.temporaryDirectory.appendingPathComponent("MacVR Diagnostics")
+        try? fm.removeItem(at: dir); try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        let files: [(URL, String)] = [(appSupport.appendingPathComponent("macvr.log"), "macvr.log"), (appSupport.appendingPathComponent("settings.json"), "settings.json")]
+            + ["runtime.log", "openvr.log", "siliconxr_openxr.log"].map { (URL(fileURLWithPath: "/tmp/vr4mac/" + $0), $0) }
+        for (src, name) in files where fm.fileExists(atPath: src.path) { try fm.copyItem(at: src, to: dir.appendingPathComponent(name)) }
+        let info = Bundle.main.infoDictionary ?? [:]
+        let about = ["MacVR \(info["CFBundleShortVersionString"] ?? "?") (\(info["CFBundleVersion"] ?? "?"))",
+                     "macOS \(ProcessInfo.processInfo.operatingSystemVersionString)",
+                     "Mac \(Diagnostics.model()), \(ProcessInfo.processInfo.physicalMemory >> 30) GB",
+                     "Wine \(Games.wine ?? "not installed")", "Exported \(Date())"].joined(separator: "\n")
+        try about.write(to: dir.appendingPathComponent("about.txt"), atomically: true, encoding: .utf8)
+        try? fm.removeItem(at: out)
+        let zip = Process(); zip.executableURL = URL(fileURLWithPath: "/usr/bin/ditto"); zip.arguments = ["-c", "-k", "--keepParent", dir.path, out.path]
+        try zip.run(); zip.waitUntilExit(); try? fm.removeItem(at: dir)
+        guard zip.terminationStatus == 0 else { throw CocoaError(.fileWriteUnknown) }
+    }
+    static func model() -> String {
+        var n = 0; sysctlbyname("hw.model", nil, &n, nil, 0)
+        var b = [CChar](repeating: 0, count: max(n, 1)); sysctlbyname("hw.model", &b, &n, nil, 0); return String(cString: b)
     }
 }
 
