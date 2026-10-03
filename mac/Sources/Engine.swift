@@ -189,6 +189,12 @@ final class Engine: ObservableObject {
         dash.recenter = { [weak self] in self?.rq.async { self?.needPlace = true } }
         dash.refreshStream = { [weak self] in self?.encoder.forceIDR = true }
         dash.close = { [weak self] in guard self?.dash.view != "welcome" else { return }; self?.rq.async { self?.setMenu(false) } }
+        dash.onToast = { [weak self] text, secs in   // menu closed (in a game): show it head-locked on the stream instead
+            self?.rq.async { [weak self] in
+                guard let self, !self.dashVisible else { return }
+                toastPanel = (Compositor.overlayPanel([(text, Engine.white, true)], ppm: ppm, textHeight: 0.022, image: toastThumb), CACurrentMediaTime() + secs); toastThumb = nil
+            }
+        }
         dash.uninstall = { [weak self] g in   // Steam confirms on the Mac: show the desktop so it can be clicked in VR
             guard let self else { return }
             games.uninstall(g)
@@ -318,7 +324,7 @@ final class Engine: ObservableObject {
                 dash.draw()
                 let tex = comp.uploadDashboard(dash.context), v = dash.view, r = dash.desktopRect, kb = dash.keyboardOpen
                 let sideTex = (0..<2).map { i in dash.sideContext(i).flatMap { comp.uploadSide(i, $0) } }
-                let wo = dash.windowOpen
+                let wo = dash.windowOpen, toastOn = dash.toastVisible
                 let touring = v == "welcome", finalStep = dash.tourFinalStep, tourPart = dash.tourPart, hs = dash.headset
                 dash.liveTourController = true
                 if dash.animatingUntil > CACurrentMediaTime() { dq.asyncAfter(deadline: .now() + .milliseconds(16)) { self.requestDraw() } }
@@ -327,7 +333,7 @@ final class Engine: ObservableObject {
                     for i in 0..<2 { comp.setSide(i, sideTex[i]) }
                     if v != dashView && dashVisible && !(v == "keyboard" && dashView == "library") { comp.pop(dock: false) }   // new window pops up
                     if wo && !windowShown && dashVisible { comp.pop(dock: false) }   // reopened from the dock
-                    windowShown = wo; comp.setWindowHidden(!wo)
+                    windowShown = wo; comp.setWindowHidden(!wo && !toastOn)   // a toast keeps the (minimised) window's panel up
                     UISounds.shared.setMusic(touring)   // welcome-tour music, faded out when the tour ends
                     dashView = v; desktopRect = r; comp.setKeyboard(kb)
                     tourFinal = finalStep
@@ -791,7 +797,7 @@ final class Engine: ObservableObject {
     // MARK: system overlays (rq): performance HUD, toasts and the recording light, stamped onto every frame (games too)
     private var perf = (frames: 0, renderNs: UInt64(0), renders: 0, videoBytes: 0, t: CACurrentMediaTime())
     private var headsetStatus: [String: Any] = [:], lowBatteryWarned = false
-    private var hudPanel: CGContext?, toastPanel: (CGContext, CFTimeInterval)?
+    private var hudPanel: CGContext?, toastPanel: (CGContext, CFTimeInterval)?, toastThumb: CGImage?
     /// Stream pixels per metre at 1 m (sizes the overlays from the eye FOV).
     private var ppm: Float {
         guard let f = lastTrack?.eye.0.fov, f.right > f.left else { return Float(eyeW) / 2 }
@@ -832,8 +838,8 @@ final class Engine: ObservableObject {
 
     /// A system notification: the menu's toast and history, plus a head-locked toast on the stream while the menu is closed.
     private func notify(_ s: String, thumb: CGImage? = nil) {
+        if let thumb { rq.async { [self] in toastThumb = thumb } }
         dq.async { [self] in dash.note(s, 3); requestDraw() }
-        if !dashVisible { toastPanel = (Compositor.overlayPanel([(s, Engine.white, true)], ppm: ppm, textHeight: 0.022, image: thumb), CACurrentMediaTime() + 3) }
     }
 
     /// Overlays for the next frame: HUD upper left, toast below the centre of view.

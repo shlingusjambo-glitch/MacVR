@@ -271,6 +271,7 @@ final class Dashboard {
         }
         if !(windowOpen && view == "notifications") { unread += 1 }
         guard !settings.bool("dnd") else { return }   // Do Not Disturb: collected, never popped up
+        onToast(s, secs)
         if !inPress { sounds.play("notify") }         // clicks already made their own sound
         toastID = notices[0].id; toastSince = CACurrentMediaTime(); toastUntil = Date().addingTimeInterval(secs)
         for t in [max(0, secs - 0.25), secs + 0.1] { DispatchQueue.global().asyncAfter(deadline: .now() + t) { [weak self] in self?.redraw() } }   // fade out, gone
@@ -1070,12 +1071,9 @@ final class Dashboard {
         if !fpsText.isEmpty { txt(fpsText, sx, st.midY + 9, 24, 0x5ee07aff); sx += textW(fpsText, 24) + 10 }
         icon(linkStatus == "USB" ? "usb" : "wifi", sx + 18, st.midY, 0xffffffff, 0.6); sx += 40
         for (i, on) in [controllersOn.0, controllersOn.1].enumerated() {   // left / right controller: lit while tracked
-            let cx = sx + 22 + CGFloat(i) * 44, side: CGFloat = i == 0 ? 1 : -1   // a Touch controller: tracking ring + grip
-            ctx.saveGState(); ctx.translateBy(x: cx, y: st.midY); ctx.rotate(by: -0.35 * side)
-            ctx.setStrokeColor(col(on ? 0xffffffff : 0xffffff50)); ctx.setFillColor(col(on ? 0xffffffff : 0xffffff50)); ctx.setLineWidth(3.5)
-            ctx.strokeEllipse(in: CGRect(x: -13, y: -17, width: 26, height: 15))                       // tracking ring, seen from the side
-            ctx.addPath(CGPath(roundedRect: CGRect(x: -5, y: -6, width: 10, height: 24), cornerWidth: 5, cornerHeight: 5, transform: nil)); ctx.fillPath()   // grip
-            ctx.restoreGState()
+            let cx = sx + 22 + CGFloat(i) * 44   // Material Symbols' handheld controller, mirrored for the left hand
+            ctx.saveGState(); ctx.translateBy(x: cx, y: st.midY); if i == 0 { ctx.scaleBy(x: -1, y: 1) }
+            icon("vrcontroller", 0, 0, on ? 0xffffffff : 0xffffff50, 0.95); ctx.restoreGState()
         }
         if view == "quick" { rr(CGRect(x: st.midX - 12, y: d.maxY - 10, width: 24, height: 4), 2, 0xc8d0d6ff) }
         let bell = m(CGRect(x: stX + pw + 14, y: d.midY - 28, width: 56, height: 56))
@@ -2230,6 +2228,10 @@ final class Dashboard {
         flicks["notes", default: Flick()].limit = maxOff
         scrollbar(area, off, maxOff)
     }
+    /// Every pop-up notification (Engine shows it head-locked while the menu is closed).
+    var onToast: (String, Double) -> Void = { _, _ in }
+    /// Engine keeps the window panel visible while a toast shows, even if the window is minimised.
+    var toastVisible: Bool { toastShowing }
     private var toastShowing: Bool { Date() < toastUntil && notices.contains { $0.id == toastID } }
     /// Pop-up toast (Horizon OS style): a card with the group's squircle icon, source, message and a hint. It opens from
     /// the middle out to both sides and closes the same way in reverse; tap it for Notifications.

@@ -111,8 +111,9 @@ final class Compositor {
             laser.geometry?.firstMaterial?.readsFromDepthBuffer = true
             laser.renderingOrder = 199
             laser.geometry?.firstMaterial?.shaderModifiers = [
-                .geometry: "#pragma varyings\nfloat rayProgress;\n#pragma body\nout.rayProgress = _geometry.position.y + 0.5;",
-                .fragment: "#pragma transparent\n#pragma body\n_output.color.a *= 1.0 - smoothstep(0.55, 1.0, in.rayProgress);"
+                // fade by distance from the hand (metres), not by beam length: a beam cut short by nearby UI stays faded
+                .geometry: "#pragma arguments\nfloat rayLen;\n#pragma varyings\nfloat rayMeters;\n#pragma body\nout.rayMeters = (_geometry.position.y + 0.5) * rayLen;",
+                .fragment: "#pragma transparent\n#pragma body\n_output.color.a *= 1.0 - smoothstep(0.06, 0.26, in.rayMeters);"
             ]
             aim.addChildNode(laser)
             let dot = Compositor.cursor()
@@ -1671,6 +1672,7 @@ final class Compositor {
         n.laser.simdPosition = start
         if distance > 0.001 { n.laser.simdOrientation = simd_quatf(from: SIMD3(0, 1, 0), to: vector / distance) }
         n.laser.simdScale = SIMD3(1, min(0.35, distance), 1)
+        n.laser.geometry?.firstMaterial?.setValue(NSNumber(value: min(0.35, distance)), forKey: "rayLen")
         n.laser.opacity = tracked ? 0.35 : 0.8
         n.dot.isHidden = n.aim.isHidden || ray == nil
         n.dot.simdPosition = n.aim.simdConvertPosition(SIMD3(0, 0, -len + 0.002), to: nil)

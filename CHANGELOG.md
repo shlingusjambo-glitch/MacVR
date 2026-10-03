@@ -1,5 +1,11 @@
 # Changes
 
+## 1.5.1
+
+- Notifications show again: with the window minimised, and in games (head-locked) while the menu is closed.
+- Controller status uses Material Symbols' handheld controller icon.
+- The laser fades out a short way from your hand, so it stays faded when nearby UI cuts it short.
+
 ## 1.5.0
 
 - **Profiles.** Photo, name, status and bio. Edit in the headset or in Settings > Profile on the Mac. Stays on your Mac.
