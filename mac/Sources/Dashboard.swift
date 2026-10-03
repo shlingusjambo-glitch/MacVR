@@ -1789,7 +1789,7 @@ final class Dashboard {
     ]
     private static let sectionKeys: [String: [String]] = [
         "general": ["render_scale", "refresh_rate"], "video": ["bitrate", "codec", "show_fps", "perf_hud", "theater_screen", "theater_curved", "theater_lights"],
-        "experimental": ["show_arms", "avatar_skin", "show_body", "home_mirror"],
+        "experimental": ["hand_tracking", "show_arms", "avatar_skin", "show_body", "home_mirror"],
         "updates": ["auto_updates"],
         "controllers": ["controller_model", "system_button"], "environment": ["home_style", "floor_grid"],
         "menu": ["menu_style", "direct_touch", "dashboard_position", "ui_curved", "dnd", "show_desktop_tabs", "show_settings_tab", "show_power"],

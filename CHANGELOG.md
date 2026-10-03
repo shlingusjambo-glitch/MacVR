@@ -1,5 +1,12 @@
 # Changes
 
+## 1.2.3
+
+- Thumbstick scrolling over UI takes priority over teleport; scroll gestures remain reserved until the stick returns to neutral.
+
+- Show Hand Tracking in the headset Experimental category.
+- Enable Hand Tracking by default.
+
 ## 1.2.2
 
 - Experimental Hand Tracking is off by default and gates optical poses and pinch input.

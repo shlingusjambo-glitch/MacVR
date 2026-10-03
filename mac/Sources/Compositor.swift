@@ -642,10 +642,28 @@ final class Compositor {
         teleportBeam.geometry?.firstMaterial?.lightingModel = .constant; teleportBeam.geometry?.firstMaterial?.diffuse.contents = NSColor.systemBlue
         teleportBeam.isHidden = true
     }
+    // 0 = neutral, 1 = UI scroll gesture, 2 = teleport gesture.
+    private var teleportStickOwner = [0, 0]
+    private func pointsAtUI(_ aim: VR4Pose) -> Bool {
+        hit(aim, solid: { _, _ in true }) != nil || hitWindow(aim) != nil || hitPicker(aim) != nil
+    }
     /// Forward stick holds teleport aiming; release commits only a snapped, walkable floor point.
     func updateTeleport(_ t: VR4Tracking, enabled: Bool) -> Bool {
         let hands = [t.hand.0, t.hand.1]
-        let requested = hands.indices.first { hands[$0].flags & UInt32(VR4_HAND_POSE_VALID) != 0 && hands[$0].stick_y > 0.65 }
+        for i in hands.indices {
+            if !enabled || hands[i].flags & UInt32(VR4_HAND_POSE_VALID) == 0 || abs(hands[i].stick_y) < 0.2 {
+                teleportStickOwner[i] = 0
+            } else if teleportStickOwner[i] == 0 || teleportStickOwner[i] == 2 {
+                if pointsAtUI(hands[i].aim) {
+                    teleportStickOwner[i] = 1
+                    // Moving a teleport aim onto UI cancels rather than committing a jump.
+                    if teleportHand == i { teleportSelection = nil }
+                } else if teleportStickOwner[i] == 0 { teleportStickOwner[i] = 2 }
+            }
+        }
+        let requested = hands.indices.first {
+            teleportStickOwner[$0] == 2 && hands[$0].flags & UInt32(VR4_HAND_POSE_VALID) != 0 && hands[$0].stick_y > 0.65
+        }
         let held = enabled && !homeOccluded && requested != nil
         if !held {
             if teleportHeld, enabled, !homeOccluded, let selection = teleportSelection, let hand = teleportHand, hands[hand].flags & UInt32(VR4_HAND_POSE_VALID) != 0 {
