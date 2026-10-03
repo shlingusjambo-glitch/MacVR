@@ -599,6 +599,7 @@ final class Engine: ObservableObject {
         let controllerValid = hs.enumerated().map { valid[$0.offset] && $0.element.flags & UInt32(VR4_HAND_TRACKED) == 0 }
         if controllerValid[0] != controllers.0 || controllerValid[1] != controllers.1 {
             DispatchQueue.main.async { self.controllers = (controllerValid[0], controllerValid[1]) }
+            dq.async { [self] in dash.controllersOn = (controllerValid[0], controllerValid[1]); requestDraw() }
         }
 
         teleportAiming = comp.updateTeleport(t, enabled: !gameActive && !theaterOn && grabHand == nil)

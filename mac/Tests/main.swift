@@ -172,10 +172,7 @@ show("library"); dash.click(uv("clearq")); dash.draw(); dash.click(uv("filter:2"
 assert(!dash.testHasRegion("sys:desktop"), "Pinned filter shows games only")
 dash.click(uv("filter:0")); dash.draw()
 assert(dash.testHasRegion("tile:9001"), "game tiles")
-assert(dash.testHasRegion("lib:next"), "touch-accessible library paging")
-dash.click(uv("lib:next")); dash.draw()
-assert(dash.testHasRegion("lib:previous"), "previous page available")
-dash.click(uv("lib:previous")); dash.draw()
+assert(!dash.testHasRegion("lib:next"), "no paging bar: the library scrolls")
 // Universal Menu upgrade: exercise real callbacks and persistent restoration.
 var recenterCount = 0
 dash.recenter = { recenterCount += 1 }
@@ -231,10 +228,6 @@ show("quick"); assert(dash.testHasRegion("win:close") && dash.testHasRegion("win
 dash.nav("overview"); dash.draw(); dash.click(uv("overview:Play"))
 
 show("library"); dash.draw()
-dash.click(uv("lib:next")); settle(0.3)
-assert(dash.testHasRegion("lib:previous") && dash.testScroll("library")!.pos > 100, "page glides down")
-dash.click(uv("lib:previous")); settle(1.2)
-assert(dash.testScroll("library")!.pos < 5, "page glides back, got \(dash.testScroll("library")!.pos)")
 // sort cycles and persists
 let sort0 = UserDefaults.standard.integer(forKey: "lib.sort")
 dash.click(uv("sort")); assert(UserDefaults.standard.integer(forKey: "lib.sort") == (sort0 + 1) % 3, "sort cycles")
@@ -344,7 +337,12 @@ dash.note("Downloading Game 3: 10%"); dash.note("View recentered"); dash.note("V
 assert(dash.notices.count == 2 && dash.notices[0].count == 2 && dash.unread == 3, "repeats count up")
 dash.draw()
 let toast = dash.testRegion("toast")!
-assert(toast.minY > CGFloat(Dashboard.SPLIT) && dash.solid(CGPoint(x: toast.midX / 2048, y: toast.midY / CGFloat(Dashboard.H))), "toast above the dock, solid")
+if let out = ProcessInfo.processInfo.environment["TOAST_PNG"] {   // a frame of the opening animation, then fully open
+    for (i, t) in [0.12, 0.5].enumerated() {
+        settle(t); if let img = dash.context.makeImage(), let d = CGImageDestinationCreateWithURL(URL(fileURLWithPath: out + "\(i).png") as CFURL, "public.png" as CFString, 1, nil) { CGImageDestinationAddImage(d, img, nil); CGImageDestinationFinalize(d) }
+    }
+}
+assert(toast.maxY < CGFloat(Dashboard.SPLIT) && dash.solid(CGPoint(x: toast.midX / 2048, y: toast.midY / CGFloat(Dashboard.H))), "toast over the window, solid")
 var acted = false
 dash.note("Mac Desktop is turned off", kind: "System", action: ("Turn On", { acted = true }))
 show("notifications"); assert(dash.unread == 0, "opening Notifications marks them read")
@@ -452,6 +450,15 @@ for (key, value) in zip(shellKeys, originalShellValues) {
 // update channels: public beats its betas, betas order by number
 assert(Updates.newer("1.4.0", than: "1.4.0-beta.3") && Updates.newer("1.4.0-beta.2", than: "1.4.0-beta.1") && Updates.newer("v1.4.0-beta.1", than: "1.3.9"))
 assert(!Updates.newer("1.4.0-beta.9", than: "1.4.0") && !Updates.newer("1.3.0", than: "1.3.0") && Updates.newer("1.10.0", than: "1.9.9"))
+// dock: profile, quick settings pill, notifications, search
+show("home"); assert(["dock:me", "dock:quick", "dock:notifications", "dock:search"].allSatisfy(dash.testHasRegion), "dock left side")
+dash.click(uv("dock:search")); assert(dash.view == "keyboard" && dash.keyboardOpen, "search opens with the keyboard")
+show("home"); dash.click(uv("dock:me")); dash.draw(); assert(dash.view == "profile" && dash.testHasRegion("profile:status"), "profile")
+let statusSaved = Dashboard.userStatus
+dash.click(uv("profile:status")); dash.draw(); assert(dash.keyboardOpen, "edit status with the keyboard")
+for ch in "hi" { dash.click(uv("kb:" + String(ch))); dash.draw() }
+dash.click(uv("kbdone")); dash.draw(); assert(Dashboard.userStatus == "hi" && !dash.keyboardOpen, "status saved, got \(Dashboard.userStatus)")
+Dashboard.userStatus = statusSaved
 // skin colour: only with Show arms; a toggle inside the picker, then any colour from the field
 let skinSaved = testSettings["avatar_skin"], armsSaved = testSettings["show_arms"]
 testSettings.set("show_arms", "Off"); testSettings.set("avatar_skin", "Original")
@@ -461,7 +468,8 @@ testSettings.set("show_arms", "On"); dash.draw()
 for _ in 0..<12 where !dash.testHasRegion("set:avatar_skin") { _ = dash.scroll(-1, at: CGPoint(x: 0.6, y: 0.4)); dash.draw() }
 assert(dash.testHasRegion("set:show_body") && dash.testHasRegion("set:avatar_skin") && !dash.testHasRegion("skin:field"), "toggle shown, field hidden while off")
 dash.click(uv("set:avatar_skin")); dash.draw()
-assert(testSettings["avatar_skin"].hasPrefix("#"), "toggle on picks a colour")
+assert(testSettings["avatar_skin"] != "Original", "toggle on picks a colour")
+dash.click(uv("skin:Grey")); assert(testSettings["avatar_skin"] == "Grey", "presets, including Grey")
 for _ in 0..<12 where !dash.testHasRegion("skin:field") { _ = dash.scroll(-1, at: CGPoint(x: 0.6, y: 0.4)); dash.draw() }
 assert(dash.press(uv("skin:field", 0.1)) == .handled, "colour field captures")
 dash.drag(uv("skin:field", 0.6)); dash.release(uv("skin:field", 0.6)); dash.draw()

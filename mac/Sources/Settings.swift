@@ -19,7 +19,7 @@ final class Settings: ObservableObject {
         ("Experimental", [
             Item(key: "hand_tracking", label: "Hand Tracking", options: offOn, def: "On", info: "Use your hands without controllers."),
             Item(key: "show_arms", label: "Show arms", options: offOn, def: "Off", info: "Arms on your hands, plus avatar options."),
-            Item(key: "avatar_skin", label: "Skin colour", options: ["Original"], def: "Original", info: ""),   // or a picked "#RRGGBB"
+            Item(key: "avatar_skin", label: "Skin colour", options: ["Original", "Grey", "Light", "Medium", "Tan", "Brown", "Deep"], def: "Original", info: ""),   // or a picked "#RRGGBB"
             Item(key: "show_body", label: "Show body", options: offOn, def: "Off", info: "A torso under your arms."),
             Item(key: "home_mirror", label: "Home mirror", options: offOn, def: "Off", info: "See your avatar in a mirror.")]),
         ("Updates", [Item(key: "auto_updates", label: "Automatic Updates", options: offOn, def: "On", info: "Installs updates while you're not playing."),
@@ -90,7 +90,7 @@ final class Settings: ObservableObject {
     static let avatarKeys: Set = ["avatar_skin", "show_body", "home_mirror"]
     /// Hands/arms colour: a picked "#RRGGBB", an older preset name, or Original (the default grey).
     static func skinColor(_ name: String) -> NSColor {
-        let tones: [String: (CGFloat, CGFloat, CGFloat)] = ["Light": (0.96, 0.77, 0.64), "Medium": (0.80, 0.57, 0.40), "Tan": (0.65, 0.40, 0.25), "Brown": (0.43, 0.24, 0.14), "Deep": (0.24, 0.12, 0.08)]
+        let tones: [String: (CGFloat, CGFloat, CGFloat)] = ["Grey": (0.56, 0.58, 0.62), "Light": (0.96, 0.77, 0.64), "Medium": (0.80, 0.57, 0.40), "Tan": (0.65, 0.40, 0.25), "Brown": (0.43, 0.24, 0.14), "Deep": (0.24, 0.12, 0.08)]
         if name.hasPrefix("#"), let v = UInt32(name.dropFirst(), radix: 16) {   // custom tone from the skin picker
             return NSColor(srgbRed: CGFloat(v >> 16 & 255) / 255, green: CGFloat(v >> 8 & 255) / 255, blue: CGFloat(v & 255) / 255, alpha: 1)
         }

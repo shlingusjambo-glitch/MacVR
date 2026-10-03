@@ -262,6 +262,16 @@ final class HandModel {
     static func configureSkin(_ material: SCNMaterial, tone: String) {
         let original = tone == "Original"
         let color = skinColor(tone)
+        if !original {   // skin colours: lit, softly shiny skin (not flat-shaded)
+            material.shaderModifiers = nil
+            material.lightingModel = .physicallyBased
+            material.diffuse.contents = color
+            material.roughness.contents = NSNumber(value: 0.42); material.metalness.contents = NSNumber(value: 0)
+            material.emission.contents = NSColor.black
+            material.transparency = 1; material.blendMode = .replace; material.isDoubleSided = false
+            material.readsFromDepthBuffer = true; material.writesToDepthBuffer = true
+            return
+        }
         material.lightingModel = .lambert
         material.diffuse.contents = NSColor.white
         material.emission.contents = NSColor.black

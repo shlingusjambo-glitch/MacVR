@@ -98,6 +98,7 @@ final class Dashboard {
     var keyboardOpen: Bool {
         (view == "commands" && commandKeyboard) || view == "keyboard" || (view == "desktop" && desktopKeyboard)
             || (view == "welcome" && Dashboard.tour[min(step, Dashboard.tour.count - 1)].kind == "name") || (view == "settings" && settingsSearch) || macKeyboard
+            || (view == "profile" && profileField != nil)
     }
     /// The user's name from the welcome tour (dock avatar, greetings); empty until they enter it.
     static var userName: String {
@@ -794,6 +795,7 @@ final class Dashboard {
         "appsettings": ("gear", "Game Details", 0x4fd18bff, 0x1f9d5cff),
         "library": ("library", "App Library", 0x6b7685ff, 0x4a5462ff),
         "notifications": ("bell", "Notifications", 0xff6b8bff, 0xe0386aff),
+        "profile": ("person", "Profile", 0xd9467aff, 0xa8235aff),
     ]
     private func appIcon(_ id: String, _ r: CGRect, hot: Bool) {
         guard let a = Dashboard.apps[id] else { return }
@@ -891,7 +893,7 @@ final class Dashboard {
         let d = Dashboard.dotRect(g)
         let dotHot = btn("x:" + id, d) { [unowned self] in
             if id == "grabkb" {   // close the keyboard
-                if macKeyboard { macKeyboard = false } else if view == "commands" { commandKeyboard = false } else if view == "desktop" { desktopKeyboard = false } else if view == "keyboard" { view = "library" } else if view == "settings" { settingsSearch = false }
+                if macKeyboard { macKeyboard = false } else if view == "commands" { commandKeyboard = false } else if view == "desktop" { desktopKeyboard = false } else if view == "keyboard" { view = "library" } else if view == "settings" { settingsSearch = false } else if view == "profile" { profileField = nil }
                 sounds.play("close"); redraw()
             } else if id == "grab" { windowOpen = false; sounds.play("close"); redraw() }   // just the window; the menu stays
             else { sounds.play("menuClose"); close() }
@@ -1032,47 +1034,62 @@ final class Dashboard {
     /// a status pill (link, time) that opens Quick Settings. Then app tiles, pinned and recent games, a divider, the App
     /// Library and (Settings > Show Power Options) the power button. Tiles lift on hover; the name fades in above.
     /// Left-Handed Layout mirrors the whole bar.
+    /// Left and right controllers currently tracked (Engine), lit in the dock's status pill.
+    var controllersOn = (false, false)
     private func questDock() {
         let items: [String] = gameActive ? ["home", "playing"] : ["home"]
         let favs = recents.compactMap { id in library.first { $0.appid == id } }
         let power = settings.bool("show_power")
-        let tile: CGFloat = 66, gap: CGFloat = 16, statusW: CGFloat = 330
-        let width = 18 + statusW + 70 + CGFloat(items.count + favs.count) * (tile + gap) + 22 + tile + 22 + (power ? 86 : 0)
+        let tile: CGFloat = 66, gap: CGFloat = 16
+        let tf = DateFormatter(); tf.dateFormat = "h:mm"
+        let time = tf.string(from: Date()), fpsText = settings.bool("show_fps") ? "\(fps)" : ""
+        let pw = 22 + textW(time, 28, bold: true) + 14 + (fpsText.isEmpty ? 0 : textW(fpsText, 24) + 10) + 40 + 2 * 44 + 10   // status pill
+        let width = 18 + 56 + 14 + pw + 14 + 56 + 12 + 56 + 40 + CGFloat(items.count + favs.count) * (tile + gap) + 22 + tile + 22 + (power ? 86 : 0)
         let d = CGRect(x: Dashboard.DOCK.midX - width / 2, y: Dashboard.DOCK.midY - 46, width: width, height: 92)
         dockRect = d
         func m(_ r: CGRect) -> CGRect { leftHanded ? CGRect(x: d.minX + d.maxX - r.maxX, y: r.minY, width: r.width, height: r.height) : r }
-        rr(d, 28, 0x1f2b33ff)   // Horizon OS dock: a rounded rectangle, not a pill
+        questPanel(d, 28)   // Horizon OS dock: a rounded rectangle with the windows' indigo/teal/rose tint
         var tip: (CGRect, String)?
-        // avatar with presence dot: opens Home
-        let av = m(CGRect(x: d.minX + 22, y: d.midY - 22, width: 44, height: 44))
-        if btn("dock:me", av.insetBy(dx: -6, dy: -6), { [unowned self] in nav("home") }) { tip = (av, Dashboard.userName.isEmpty ? "Home" : Dashboard.userName) }
-        rr(av, 22, 0xd9467aff)
-        if let first = Dashboard.userName.first { txt(String(first).uppercased(), av.midX, av.midY + 9, 26, bold: true, align: 0.5) }
-        else { icon("person", av.midX, av.midY, 0xffffffff, 0.6) }
-        rr(CGRect(x: av.maxX - 13, y: av.maxY - 13, width: 15, height: 15), 7.5, 0x1f2b33ff)
-        rr(CGRect(x: av.maxX - 11, y: av.maxY - 11, width: 11, height: 11), 5.5, 0x45d36bff)   // headset connected
-        // notifications
-        let bell = m(CGRect(x: d.minX + 78, y: d.midY - 26, width: 52, height: 52))
-        if btn("dock:notifications", bell, { [unowned self] in nav("notifications") }) {
-            tip = (bell, unread > 0 ? "Notifications · \(unread) new" : "Notifications"); rr(bell, 26, 0xffffff1c)
+        // left side, Horizon OS order: profile, status pill (time, Wi-Fi, controllers) -> Quick Settings, notifications, search
+        func sq(_ id: String, _ r: CGRect, _ label: String, _ fn: @escaping () -> Void) -> Bool {   // squircle button
+            let h = btn(id, r, fn); if h { tip = (r, label) }
+            rr(r, 18, isPressed(id) ? 0xffffff3a : h ? 0xffffff28 : 0xffffff14); return h   // the dock's tint shows through
         }
-        icon("bell", bell.midX, bell.midY, 0xe0e5e8ff, 0.6)
-        if settings.bool("dnd") { icon("moon", bell.maxX - 12, bell.minY + 12, 0xc8d0d6ff, 0.36) }
-        else if unread > 0 { rr(CGRect(x: bell.maxX - 17, y: bell.minY + 7, width: 13, height: 13), 6.5, 0x2a73f5ff) }
-        if view == "notifications" { rr(CGRect(x: bell.midX - 12, y: d.maxY - 10, width: 24, height: 4), 2, 0xc8d0d6ff) }
-        // status pill: link, fps, time -> Quick Settings
-        let tf = DateFormatter(); tf.dateFormat = "h:mm"
-        let time = tf.string(from: Date()), fpsText = settings.bool("show_fps") ? "\(fps)" : ""
-        let pw = 130 + CGFloat(time.count + fpsText.count) * 15
-        let st = m(CGRect(x: d.minX + 142, y: d.midY - 26, width: pw, height: 52))
+        let avX = d.minX + 18, stX = avX + 70   // unmirrored x positions; m() mirrors for the left-handed layout
+        let av = m(CGRect(x: avX, y: d.midY - 28, width: 56, height: 56))
+        _ = sq("dock:me", av, Dashboard.userName.isEmpty ? "Profile" : Dashboard.userName) { [unowned self] in nav("profile") }
+        avatar(av.insetBy(dx: 3, dy: 3), 15)
+        rr(CGRect(x: av.maxX - 15, y: av.maxY - 15, width: 17, height: 17), 8.5, 0x2c3442ff)
+        rr(CGRect(x: av.maxX - 13, y: av.maxY - 13, width: 13, height: 13), 6.5, 0x45d36bff)   // headset connected
+        if view == "profile" { rr(CGRect(x: av.midX - 12, y: d.maxY - 10, width: 24, height: 4), 2, 0xc8d0d6ff) }
+        let st = m(CGRect(x: stX, y: d.midY - 28, width: pw, height: 56))
         if btn("dock:quick", st, { [unowned self] in nav("quick") }) { tip = (st, "Quick Settings") }
-        rr(st, 26, isPressed("dock:quick") ? 0x46525dff : hover == "dock:quick" ? 0x3e4c55ff : 0x34434bff)
-        icon(linkStatus == "USB" ? "usb" : "wifi", st.minX + 32, st.midY, 0xe0e5e8ff, 0.55)
-        if !fpsText.isEmpty { txt(fpsText, st.minX + 58, st.midY + 9, 26, 0x5ee07aff) }
-        txt(time, st.maxX - 22, st.midY + 9, 26, 0xe0e5e8ff, align: 1)
+        rr(st, 18, isPressed("dock:quick") ? 0xffffff3a : hover == "dock:quick" ? 0xffffff28 : 0xffffff14)
+        txt(time, st.minX + 22, st.midY + 10, 28, 0xffffffff, bold: true)
+        var sx = st.minX + 30 + textW(time, 28, bold: true)
+        if !fpsText.isEmpty { txt(fpsText, sx, st.midY + 9, 24, 0x5ee07aff); sx += textW(fpsText, 24) + 10 }
+        icon(linkStatus == "USB" ? "usb" : "wifi", sx + 18, st.midY, 0xffffffff, 0.6); sx += 40
+        for (i, on) in [controllersOn.0, controllersOn.1].enumerated() {   // left / right controller: lit while tracked
+            let cx = sx + 22 + CGFloat(i) * 44, side: CGFloat = i == 0 ? 1 : -1   // a Touch controller: tracking ring + grip
+            ctx.saveGState(); ctx.translateBy(x: cx, y: st.midY); ctx.rotate(by: -0.35 * side)
+            ctx.setStrokeColor(col(on ? 0xffffffff : 0xffffff50)); ctx.setFillColor(col(on ? 0xffffffff : 0xffffff50)); ctx.setLineWidth(3.5)
+            ctx.strokeEllipse(in: CGRect(x: -13, y: -17, width: 26, height: 15))                       // tracking ring, seen from the side
+            ctx.addPath(CGPath(roundedRect: CGRect(x: -5, y: -6, width: 10, height: 24), cornerWidth: 5, cornerHeight: 5, transform: nil)); ctx.fillPath()   // grip
+            ctx.restoreGState()
+        }
         if view == "quick" { rr(CGRect(x: st.midX - 12, y: d.maxY - 10, width: 24, height: 4), 2, 0xc8d0d6ff) }
+        let bell = m(CGRect(x: stX + pw + 14, y: d.midY - 28, width: 56, height: 56))
+        _ = sq("dock:notifications", bell, unread > 0 ? "Notifications · \(unread) new" : "Notifications") { [unowned self] in nav("notifications") }
+        icon("bell", bell.midX, bell.midY, 0xffffffff, 0.62)
+        if settings.bool("dnd") { icon("moon", bell.maxX - 12, bell.minY + 12, 0xc8d0d6ff, 0.36) }
+        else if unread > 0 { rr(CGRect(x: bell.maxX - 16, y: bell.minY + 2, width: 16, height: 16), 8, 0x2d8cffff) }   // unread
+        if view == "notifications" { rr(CGRect(x: bell.midX - 12, y: d.maxY - 10, width: 24, height: 4), 2, 0xc8d0d6ff) }
+        let find = m(CGRect(x: stX + pw + 82, y: d.midY - 28, width: 56, height: 56))
+        _ = sq("dock:search", find, "Search") { [unowned self] in searchText = ""; nav("keyboard") }
+        icon("search", find.midX, find.midY, 0xffffffff, 0.62)
+        if view == "keyboard" { rr(CGRect(x: find.midX - 12, y: d.maxY - 10, width: 24, height: 4), 2, 0xc8d0d6ff) }
         // app tiles: lift on hover, sink on press
-        var x = max(d.minX + 142 + pw + 40, d.minX + 18 + statusW + 70)
+        var x = d.minX + 18 + 56 + 14 + pw + 14 + 56 + 12 + 56 + 40
         func slot(_ id: String, _ label: String, _ draw: (CGRect) -> Void, _ fn: @escaping () -> Void, active: Bool) {
             let r0 = m(CGRect(x: x, y: d.midY - tile / 2 - 3, width: tile, height: tile))
             let h = btn("dock:" + id, r0.insetBy(dx: -gap / 2, dy: -8), fn)
@@ -1410,7 +1427,7 @@ final class Dashboard {
             let t = Dashboard.lastPlayed(id); return t > 0 ? t : launched.firstIndex(of: id).map { Double(100 - $0) } ?? 0
         }, played: Dashboard.playTime)
         let setKeys: [String] = []
-        let area = CGRect(x: c.minX, y: c.minY + 80, width: c.width, height: c.height - 80 - 74)
+        let area = CGRect(x: c.minX, y: c.minY + 80, width: c.width, height: c.height - 80)
         let off = flicks["library"]?.pos ?? 0
         let cols = 4, gap: CGFloat = 36, pad: CGFloat = 18, tw = (area.width - 20 - 2 * pad - CGFloat(cols - 1) * gap) / CGFloat(cols), th = tw * 0.467, rowH = th + 104
         var y = area.minY - off
@@ -1480,23 +1497,8 @@ final class Dashboard {
         }
         let maxOff = max(0, y + off - area.maxY + 10)
         flicks["library", default: Flick()].limit = maxOff
-        // bottom bar: hint + page buttons (touch-friendly paging without a thumbstick)
-        let pageY = c.maxY - 64
-        txt("", c.minX + 8, pageY + 40, 24, 0xa4adb4ff)
-        if off > 1 {
-            homeAction("lib:previous", "Previous", "back", CGRect(x: c.maxX - 470, y: pageY, width: 220, height: 60)) { [unowned self] in pageLibrary(-area.height) }
-        }
-        if off < maxOff - 1 {
-            homeAction("lib:next", "Next", "next", CGRect(x: c.maxX - 230, y: pageY, width: 220, height: 60)) { [unowned self] in pageLibrary(area.height) }
-        }
         scrollbar(area, off, maxOff)
         if let (r, g) = menuTile { contextMenu(g, at: r) }
-    }
-    private func pageLibrary(_ d: CGFloat) {
-        guard var f = flicks["library"] else { return }
-        let target = max(0, min(f.limit, f.pos + d))
-        if reduceMotion { f.set(target) } else { f.glide(target - f.pos) }
-        flicks["library"] = f; animatingUntil = max(animatingUntil, CACurrentMediaTime() + 0.05); redraw()
     }
     /// Direct touch / pinch held on a game: a ring fills, then its menu opens.
     private func longPressRing(_ r: CGRect) {
@@ -1854,7 +1856,7 @@ final class Dashboard {
         clipped(body.insetBy(dx: -8, dy: 0)) {
             for key in results ?? Dashboard.sectionKeys[section] ?? [] where settings.bool("show_arms") || !Settings.avatarKeys.contains(key) {
                 if reveal == key { revealY = y + off - body.minY - 12 }
-                if key == "avatar_skin" { y += skinPicker(CGRect(x: body.minX, y: y, width: body.width - 24, height: 340), clip: body) + 14; continue }
+                if key == "avatar_skin" { y += skinPicker(CGRect(x: body.minX, y: y, width: body.width - 24, height: 420), clip: body) + 14; continue }
                 y += settingRow(key, CGRect(x: body.minX, y: y, width: body.width - 24, height: 0), clip: body, caption: results != nil) + 14
             }
             if results?.isEmpty == true { txt("No settings match. Try another word.", body.minX + 10, y + 40, 28, 0xa4adb4ff) }
@@ -2009,7 +2011,7 @@ final class Dashboard {
     /// Skin colour (Settings > Experimental, with Show arms): a toggle for a custom colour and, while on, a big
     /// any-colour field to drag across. Off = the original grey hands. The hands update when you let go.
     private func skinPicker(_ r0: CGRect, clip: CGRect) -> CGFloat {
-        let custom = settings["avatar_skin"].hasPrefix("#")
+        let custom = settings["avatar_skin"] != "Original" && !settings["avatar_skin"].isEmpty
         let r = CGRect(x: r0.minX, y: r0.minY, width: r0.width, height: custom ? r0.height : 104)
         guard r.maxY > clip.minY - 10, r.minY < clip.maxY + 10 else { return r.height }
         face(r, 22, on: false, base: 0x2c343fff)
@@ -2021,7 +2023,18 @@ final class Dashboard {
         }) { rr(tg.insetBy(dx: -6, dy: -6), 30, 0xffffff14) }
         toggle(tg, custom, id: "avatar_skin")
         guard custom else { return r.height }
-        let field = CGRect(x: r.minX + 30, y: r.minY + 104, width: r.width - 240, height: r.height - 130)
+        // presets
+        for (i, name) in ["Grey", "Light", "Medium", "Tan", "Brown", "Deep"].enumerated() {
+            let b = CGRect(x: r.minX + 30 + CGFloat(i) * 150, y: r.minY + 100, width: 136, height: 64)
+            let h = b.intersection(clip).height > 30 && btn("skin:" + name, b) { [unowned self] in
+                settings.set("avatar_skin", name); UserDefaults.standard.set(name, forKey: "skin.color"); UserDefaults.standard.removeObject(forKey: "skin.pick"); sounds.play("tap"); redraw()
+            }
+            rr(b, 18, h ? 0x46525dff : 0x34404aff)
+            let c = Settings.skinColor(name); ctx.setFillColor(c.cgColor); ctx.fillEllipse(in: CGRect(x: b.minX + 12, y: b.midY - 17, width: 34, height: 34))
+            txt(name, b.minX + 56, b.midY + 9, 25, bold: settings["avatar_skin"] == name, maxW: b.width - 62)
+            if settings["avatar_skin"] == name { outline(b.insetBy(dx: -3, dy: -3), 20, 0x2d8cffff, 3) }
+        }
+        let field = CGRect(x: r.minX + 30, y: r.minY + 184, width: r.width - 240, height: r.height - 210)
         if Dashboard.skinField == nil {
             let c = CGContext(data: nil, width: 180, height: 60, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
             for x in 0..<180 { for y in 0..<60 {
@@ -2047,7 +2060,7 @@ final class Dashboard {
         if let img = Dashboard.skinField { ctx.interpolationQuality = .high; ctx.draw(img, in: field) }
         ctx.restoreGState()
         let saved = UserDefaults.standard.array(forKey: "skin.pick") as? [Double]
-        if let (x, y) = skinDraft ?? saved.map({ (CGFloat($0[0]), CGFloat($0[1])) }) {
+        if let (x, y) = skinDraft ?? (settings["avatar_skin"].hasPrefix("#") ? saved.map({ (CGFloat($0[0]), CGFloat($0[1])) }) : nil) {
             let m = CGPoint(x: field.minX + x * field.width, y: field.minY + y * field.height)
             ctx.setStrokeColor(CGColor(gray: 0, alpha: 0.45)); ctx.setLineWidth(10); ctx.strokeEllipse(in: CGRect(x: m.x - 22, y: m.y - 22, width: 44, height: 44))
             ctx.setStrokeColor(CGColor(gray: 1, alpha: 1)); ctx.setLineWidth(5); ctx.strokeEllipse(in: CGRect(x: m.x - 22, y: m.y - 22, width: 44, height: 44))
@@ -2218,35 +2231,102 @@ final class Dashboard {
         scrollbar(area, off, maxOff)
     }
     private var toastShowing: Bool { Date() < toastUntil && notices.contains { $0.id == toastID } }
-    /// Pop-up toast: slides down and fades in just above the dock (never over a window's controls), with the group's
-    /// icon, an optional action, and a tap to open Notifications.
+    /// Pop-up toast (Horizon OS style): a card with the group's squircle icon, source, message and a hint. It opens from
+    /// the middle out to both sides and closes the same way in reverse; tap it for Notifications.
     private func drawToast() {
         guard Date() < toastUntil, let n = notices.first(where: { $0.id == toastID }) else { return }
         let age = now - toastSince, left = toastUntil.timeIntervalSinceNow
-        let p = reduceMotion ? 1 : CGFloat(min(1, age / 0.3)), q = reduceMotion ? 1 : CGFloat(min(1, max(0, left / 0.25)))
+        let p = reduceMotion ? 1 : CGFloat(min(1, age / 0.35)), q = reduceMotion ? 1 : CGFloat(min(1, max(0, left / 0.3)))
         if p < 1 || q < 1 { keepAnimating() }
-        let e = 1 - pow(1 - p, 3), a = min(e, q)
+        let ease = { (t: CGFloat) in 1 - pow(1 - t, 3) }, open = min(ease(p), ease(q))
         let k = Dashboard.noticeKinds.first { $0.kind == n.kind } ?? Dashboard.noticeKinds[3]
-        let tw = min(1100, textW(n.text, 28)), aw = n.action.map { textW($0.label, 26, bold: true) + 56 } ?? 0
-        let w = 100 + tw + 36 + (aw > 0 ? aw + 12 : 0) + (n.count > 1 ? 70 : 0)
-        let y0 = view == "welcome" ? Dashboard.WIN.minY + 24 : max(CGFloat(Dashboard.SPLIT) + 4, dockRect.minY - 82)   // the tour hides the dock
-        let r = CGRect(x: CGFloat(Dashboard.W) / 2 - w / 2, y: y0 + 24 * (1 - e), width: w, height: 72)
+        let aw = n.action.map { textW($0.label, 26, bold: true) + 56 } ?? 0
+        let w = min(1300, max(760, 150 + textW(n.text, 30, bold: true) + 40 + (aw > 0 ? aw + 20 : 0))), h: CGFloat = 132
+        let y0 = view == "welcome" ? Dashboard.WIN.minY + 24 : Dashboard.WIN.maxY - 72 - h - 20   // over the window, above its title strip
+        let r = CGRect(x: CGFloat(Dashboard.W) / 2 - w / 2, y: y0, width: w, height: h)
         btn("toast", r) { [unowned self] in toastUntil = .distantPast; nav("notifications") }
-        ctx.saveGState(); ctx.setAlpha(a); ctx.beginTransparencyLayer(in: r.insetBy(dx: -60, dy: -60), auxiliaryInfo: nil)
-        ctx.saveGState(); ctx.setShadow(offset: CGSize(width: 0, height: -10), blur: 30, color: CGColor(gray: 0, alpha: 0.55))
-        rr(r, 36, 0x0d1117f6); ctx.restoreGState()
-        if hover == "toast" { outline(r, 36, 0xffffff60, 2) }
-        rr(CGRect(x: r.minX + 14, y: r.midY - 22, width: 44, height: 44), 22, k.color)
-        icon(k.icon, r.minX + 36, r.midY, 0xffffffff, 0.6)
-        txt(n.text, r.minX + 76, r.midY + 10, 28, maxW: tw)
-        if n.count > 1 { txt("×\(n.count)", r.minX + 90 + tw, r.midY + 10, 26, 0xa4adb4ff) }
+        let shown = CGRect(x: r.midX - r.width * open / 2, y: r.minY - 40, width: r.width * open, height: r.height + 80)
+        ctx.saveGState(); ctx.clip(to: shown); ctx.setAlpha(min(1, open * 1.4))
+        ctx.beginTransparencyLayer(in: r.insetBy(dx: -60, dy: -60), auxiliaryInfo: nil)
+        ctx.saveGState(); ctx.setShadow(offset: CGSize(width: 0, height: -10), blur: 30, color: CGColor(gray: 0, alpha: 0.5))
+        rr(r, 30, 0x3a3b40f4); ctx.restoreGState()
+        if hover == "toast" { outline(r, 30, 0xffffff50, 2) }
+        let ic = CGRect(x: r.minX + 22, y: r.midY - 40, width: 80, height: 80)
+        rr(ic, 22, k.color); icon(k.icon, ic.midX, ic.midY, 0xffffffff, 0.95)
+        let tx = ic.maxX + 26, maxW = r.maxX - tx - 24 - (aw > 0 ? aw + 16 : 0)
+        txt(n.kind, tx, r.minY + 40, 24, 0xe0e3e8ff, bold: true)
+        txt("MacVR", tx + textW(n.kind, 24, bold: true) + 16, r.minY + 40, 24, 0xa4a8b0ff)
+        txt(n.text + (n.count > 1 ? "  ×\(n.count)" : ""), tx, r.minY + 80, 30, 0xffffffff, bold: true, maxW: maxW)
+        txt("Select to open", tx, r.minY + 114, 23, 0xa4a8b0ff)
         if let act = n.action {
-            let pr = CGRect(x: r.maxX - aw - 8, y: r.minY + 9, width: aw - 4, height: 54)
-            face(pr, 27, on: btn("toast:act", pr) { [unowned self] in act.run(); toastUntil = .distantPast; redraw() }, base: 0x2a73f5ff, hot: 0x4a88f7ff)
+            let pr = CGRect(x: r.maxX - aw - 20, y: r.midY - 28, width: aw, height: 56)
+            face(pr, 28, on: btn("toast:act", pr) { [unowned self] in act.run(); toastUntil = .distantPast; redraw() }, base: 0x2a73f5ff, hot: 0x4a88f7ff)
             txt(act.label, pr.midX, pr.midY + 9, 26, bold: true, align: 0.5)
         }
         ctx.endTransparencyLayer(); ctx.restoreGState()
         solidExtra.append(r)
+    }
+
+    // MARK: profile (local only: name, status, bio and a photo or colour; nothing leaves this Mac)
+    static var userStatus: String { get { UserDefaults.standard.string(forKey: "user.status") ?? "" } set { UserDefaults.standard.set(newValue, forKey: "user.status") } }
+    static var userBio: String { get { UserDefaults.standard.string(forKey: "user.bio") ?? "" } set { UserDefaults.standard.set(newValue, forKey: "user.bio") } }
+    static let avatarColors: [UInt32] = [0xd9467aff, 0x2d8cffff, 0x34c27aff, 0xf0a020ff, 0x9b5cf6ff, 0x5c6b7aff]
+    static var avatarColor: UInt32 { avatarColors[min(max(UserDefaults.standard.integer(forKey: "user.color"), 0), avatarColors.count - 1)] }
+    static let photoURL = appSupport.appendingPathComponent("profile.png")
+    private static var photo: (Date, CGImage)?
+    /// The profile photo (Settings on the Mac picks it), reloaded when the file changes.
+    static func profilePhoto() -> CGImage? {
+        guard let m = (try? FileManager.default.attributesOfItem(atPath: photoURL.path))?[.modificationDate] as? Date else { photo = nil; return nil }
+        if let p = photo, p.0 == m { return p.1 }
+        guard let img = NSImage(contentsOf: photoURL)?.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        photo = (m, img); return img
+    }
+    /// Photo, or the initial on the chosen colour, clipped to a squircle.
+    private func avatar(_ r: CGRect, _ radius: CGFloat) {
+        if let img = Dashboard.profilePhoto() {
+            ctx.saveGState(); ctx.addPath(path(r, radius)); ctx.clip()
+            let s = min(CGFloat(img.width), CGFloat(img.height)), crop = img.cropping(to: CGRect(x: (CGFloat(img.width) - s) / 2, y: (CGFloat(img.height) - s) / 2, width: s, height: s)) ?? img
+            ctx.translateBy(x: 0, y: r.maxY + r.minY); ctx.scaleBy(x: 1, y: -1); ctx.interpolationQuality = .high; ctx.draw(crop, in: r)
+            ctx.restoreGState(); return
+        }
+        rr(r, radius, Dashboard.avatarColor)
+        if let first = Dashboard.userName.first { txt(String(first).uppercased(), r.midX, r.midY + r.height * 0.19, r.height * 0.52, bold: true, align: 0.5) }
+        else { icon("person", r.midX, r.midY, 0xffffffff, r.height / 80) }
+    }
+    private var profileField: String?, profileDraft = ""
+    private func drawProfile() {
+        let c = content
+        let pic = CGRect(x: c.minX + 10, y: c.minY + 20, width: 220, height: 220)
+        avatar(pic, 56)
+        let x = pic.maxX + 50
+        txt(Dashboard.userName.isEmpty ? "Your name" : Dashboard.userName, x, c.minY + 90, 52, Dashboard.userName.isEmpty ? 0x8a94a0ff : 0xffffffff, bold: true, maxW: c.maxX - x)
+        txt(Dashboard.userStatus.isEmpty ? "Set a status" : Dashboard.userStatus, x, c.minY + 140, 30, Dashboard.userStatus.isEmpty ? 0x8a94a0ff : 0x9cd7ffff, maxW: c.maxX - x)
+        for (i, l) in wrap(Dashboard.userBio.isEmpty ? "Add a bio" : Dashboard.userBio, 28, c.maxX - x, maxLines: 3).enumerated() {
+            txt(l, x, c.minY + 190 + CGFloat(i) * 36, 28, Dashboard.userBio.isEmpty ? 0x8a94a0ff : 0xd2d8dcff)
+        }
+        // edit row
+        var bx = c.minX + 10
+        for (id, label, value) in [("name", "Name", Dashboard.userName), ("status", "Status", Dashboard.userStatus), ("bio", "Bio", Dashboard.userBio)] {
+            let b = CGRect(x: bx, y: c.minY + 300, width: 250, height: 70)
+            homeAction("profile:" + id, "Edit " + label.lowercased(), "keyboard", b) { [unowned self] in
+                profileField = id; profileDraft = value; redraw()
+            }
+            bx = b.maxX + 20
+        }
+        // colour (when there's no photo)
+        txt("Colour", c.minX + 10, c.minY + 440, 26, 0xa4adb4ff, bold: true)
+        for (i, col) in Dashboard.avatarColors.enumerated() {
+            let r = CGRect(x: c.minX + 10 + CGFloat(i) * 86, y: c.minY + 464, width: 66, height: 66)
+            let h = btn("profile:color:\(i)", r) { [unowned self] in UserDefaults.standard.set(i, forKey: "user.color"); sounds.play("tap"); redraw() }
+            rr(r, 18, col)
+            if Dashboard.avatarColor == col { outline(r.insetBy(dx: -5, dy: -5), 22, 0xffffffff, 4) } else if h { outline(r.insetBy(dx: -4, dy: -4), 21, 0xffffff80, 3) }
+        }
+        txt(Dashboard.profilePhoto() == nil ? "Add a photo in MacVR's Settings on your Mac." : "Photo set in MacVR's Settings on your Mac.", c.minX + 10, c.minY + 590, 24, 0x8a94a0ff)
+        if let f = profileField {   // what's being typed
+            let r = CGRect(x: c.minX, y: c.maxY - 90, width: c.width, height: 80)
+            rr(r, 20, 0x00000040)
+            txt((f == "name" ? "Name: " : f == "status" ? "Status: " : "Bio: ") + profileDraft + "▏", r.minX + 24, r.midY + 11, 30, maxW: r.width - 48)
+        }
     }
 
     // MARK: first-run welcome tour (questions first, then the controls, then "press your menu button")
@@ -2391,7 +2471,7 @@ final class Dashboard {
         }
         return out
     }
-    private func kbText(_ target: String) -> String { ["search": searchText, "settings": settingsQuery, "name": nameDraft][target] ?? typed }
+    private func kbText(_ target: String) -> String { ["search": searchText, "settings": settingsQuery, "name": nameDraft, "profile": profileDraft][target] ?? typed }
     private func kbWords(_ target: String) -> [String] {
         let names = library.flatMap { $0.name.split(separator: " ").map(String.init) }.filter { $0.count > 2 }
         switch target {
@@ -2405,6 +2485,7 @@ final class Dashboard {
         case "search": searchText += s; flicks["library"] = nil; commandPage = 0
         case "settings": settingsQuery += s; flicks["settings"] = nil
         case "name": if nameDraft.count < 24 && !(s == " " && nameDraft.isEmpty) { nameDraft += s }
+        case "profile": if profileDraft.count < (profileField == "bio" ? 150 : profileField == "status" ? 40 : 24) { profileDraft += s }
         default: typeText(s); typed = s == " " ? "" : String((typed + s).suffix(40))
         }
         if kbShift && !kbCaps { kbShift = false }
@@ -2414,6 +2495,7 @@ final class Dashboard {
         case "search": if !searchText.isEmpty { searchText.removeLast() }; commandPage = 0
         case "settings": if !settingsQuery.isEmpty { settingsQuery.removeLast() }
         case "name": if !nameDraft.isEmpty { nameDraft.removeLast() }
+        case "profile": if !profileDraft.isEmpty { profileDraft.removeLast() }
         default: keyCode(51); if !typed.isEmpty { typed.removeLast() }
         }
     }
@@ -2434,9 +2516,9 @@ final class Dashboard {
             }
             x += 14
         }
-        let sugg = target == "name" ? [] : Dashboard.suggest(kbText(target), kbWords(target))
+        let sugg = target == "name" || target == "profile" ? [] : Dashboard.suggest(kbText(target), kbWords(target))
         if sugg.isEmpty {
-            txt(target == "name" ? "Your name stays on this Mac." : "Suggestions appear as you type", (x + r.maxX) / 2, r.minY + top / 2 + 9, 24, 0x6b7685ff, align: 0.5)
+            txt(target == "name" || target == "profile" ? "Stays on this Mac." : "Suggestions appear as you type", (x + r.maxX) / 2, r.minY + top / 2 + 9, 24, 0x6b7685ff, align: 0.5)
         }
         let sw = (r.maxX - x - 2 * 10) / 3
         for (i, s) in sugg.enumerated() {
@@ -2474,6 +2556,10 @@ final class Dashboard {
             case "search": if view == "commands" { commandKeyboard = false } else { view = "library" }
             case "settings": settingsSearch = false
             case "name": if !nameDraft.trimmingCharacters(in: .whitespaces).isEmpty { Dashboard.userName = nameDraft.trimmingCharacters(in: .whitespaces); step += 1 }
+            case "profile":
+                let v = profileDraft.trimmingCharacters(in: .whitespaces)
+                switch profileField { case "name": if !v.isEmpty { Dashboard.userName = v }; case "status": Dashboard.userStatus = v; default: Dashboard.userBio = v }
+                profileField = nil
             default: keyCode(36); typed = ""
             }
         })
@@ -2565,6 +2651,7 @@ final class Dashboard {
         case "quick": if quest { drawQuickQuest() } else { drawQuick() }
         case "settings": drawSettings()
         case "notifications": drawNotifications()
+        case "profile": drawProfile()
         case "appsettings": drawAppSettings()
         case "welcome": drawWelcome()
         default: drawLibrary()
@@ -2597,7 +2684,7 @@ final class Dashboard {
         }
         if view != "welcome" { if quest { questDock() } else { dock() } }   // no Universal Menu during the first-run tour
         if keyboardOpen {
-            keyboardPanel(target: view == "desktop" || macKeyboard ? "desktop" : view == "welcome" ? "name" : view == "settings" ? "settings" : "search")
+            keyboardPanel(target: view == "desktop" || macKeyboard ? "desktop" : view == "welcome" ? "name" : view == "settings" ? "settings" : view == "profile" ? "profile" : "search")
             grabBar("grabkb", Dashboard.KBGRAB)
         }
         drawToast()

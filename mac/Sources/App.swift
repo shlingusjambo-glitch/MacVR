@@ -197,7 +197,7 @@ struct SettingsView: View {
     @StateObject private var ui = SettingsUI()
 
     static let sections: [(id: String, label: String, symbol: String, top: UInt32, bottom: UInt32)] = [
-        ("general", "General", "gearshape.fill", 0x8e8e93, 0x636366), ("video", "Display & Video", "display", 0x3aa0ff, 0x1467e0),
+        ("profile", "Profile", "person.crop.circle.fill", 0xd9467a, 0xa8235a), ("general", "General", "gearshape.fill", 0x8e8e93, 0x636366), ("video", "Display & Video", "display", 0x3aa0ff, 0x1467e0),
         ("controllers", "Controllers", "gamecontroller.fill", 0xb07cff, 0x7040e0), ("audio", "Audio", "speaker.wave.2.fill", 0xff6b8b, 0xe0386a),
         ("environment", "Environment", "mountain.2.fill", 0x4fd18b, 0x1f9d5c), ("menu", "Universal Menu", "square.grid.3x3.fill", 0xffb23d, 0xf07b12),
         ("accessibility", "Accessibility", "accessibility", 0x2a73f5, 0x1a4fb8),
@@ -245,6 +245,7 @@ struct SettingsView: View {
                     case "environment": EnvironmentGrid(settings: settings)
                     case "games": GamesCard(games: games)
                     case "about": about
+                    case "profile": ProfileCard()
                     default: EmptyView()
                     }
                     if !keys.isEmpty {
@@ -260,24 +261,7 @@ struct SettingsView: View {
     }
 
     @ViewBuilder private func row(_ key: String) -> some View {
-        if Settings.avatarKeys.contains(key) && settings.values["show_arms"] != "On" {
-            EmptyView()   // avatar options only with Show arms
-        } else if key == "avatar_skin" {
-            HStack {
-                Text("Skin colour").font(.system(size: 13)).foregroundColor(.white)
-                Spacer()
-                if settings.values["avatar_skin"]?.hasPrefix("#") == true {
-                    ColorPicker("", selection: Binding(get: { Color(nsColor: Settings.skinColor(settings.values["avatar_skin"] ?? "")) }, set: { c in
-                        guard let s = NSColor(c).usingColorSpace(.sRGB) else { return }
-                        let h = String(format: "#%02X%02X%02X", Int(s.redComponent * 255), Int(s.greenComponent * 255), Int(s.blueComponent * 255))
-                        settings.set("avatar_skin", h); UserDefaults.standard.set(h, forKey: "skin.color")
-                    }), supportsOpacity: false).labelsHidden()
-                }
-                Toggle("", isOn: Binding(get: { settings.values["avatar_skin"]?.hasPrefix("#") == true },
-                                         set: { settings.set("avatar_skin", $0 ? UserDefaults.standard.string(forKey: "skin.color") ?? "#C68863" : "Original") }))
-                    .toggleStyle(.switch).labelsHidden()
-            }
-        } else if let it = Settings.items[key] {
+        if let it = Settings.items[key] {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(it.label).font(.system(size: 13)).foregroundColor(.white)
@@ -542,6 +526,49 @@ struct CompanionView: View {
                     }.padding(12).background(OS.card, in: RoundedRectangle(cornerRadius: 16))
                 }
             }
+        }
+    }
+}
+
+/// Profile (local only, like Horizon's): photo, name, status and bio. The headset shows it on the dock and in Profile.
+final class ProfileModel: ObservableObject {
+    @Published var name = Dashboard.userName { didSet { Dashboard.userName = String(name.prefix(24)) } }
+    @Published var status = Dashboard.userStatus { didSet { Dashboard.userStatus = String(status.prefix(40)) } }
+    @Published var bio = Dashboard.userBio { didSet { Dashboard.userBio = String(bio.prefix(150)) } }
+    @Published var photo = NSImage(contentsOf: Dashboard.photoURL)
+}
+struct ProfileCard: View {
+    @StateObject private var m = ProfileModel()
+    var body: some View {
+        Card {
+            HStack(alignment: .top, spacing: 18) {
+                VStack(spacing: 8) {
+                    Group {
+                        if let photo = m.photo { Image(nsImage: photo).resizable().scaledToFill() }
+                        else { Color(nsColor: NSColor(srgbRed: 0.85, green: 0.27, blue: 0.48, alpha: 1)).overlay(Text(String(m.name.prefix(1)).uppercased()).font(.system(size: 40, weight: .bold)).foregroundColor(.white)) }
+                    }.frame(width: 110, height: 110).clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+                    Button("Choose Photo…") { choose() }.buttonStyle(.plain).font(.system(size: 12)).foregroundColor(OS.accent)
+                    if m.photo != nil { Button("Remove") { try? FileManager.default.removeItem(at: Dashboard.photoURL); m.photo = nil }.buttonStyle(.plain).font(.system(size: 12)).foregroundColor(OS.dim) }
+                }
+                VStack(alignment: .leading, spacing: 10) {
+                    TextField("Name", text: $m.name)
+                    TextField("Status", text: $m.status)
+                    TextField("Bio", text: $m.bio, axis: .vertical).lineLimit(3...5)
+                    Text("Stays on this Mac.").font(.system(size: 11)).foregroundColor(OS.dim)
+                }.textFieldStyle(.roundedBorder)
+            }
+        }
+    }
+    private func choose() {
+        let p = NSOpenPanel(); p.allowedContentTypes = [.image]; p.allowsMultipleSelection = false
+        guard p.runModal() == .OK, let url = p.url, let img = NSImage(contentsOf: url) else { return }
+        let side: CGFloat = 512, out = NSImage(size: NSSize(width: side, height: side))   // square, 512 px
+        out.lockFocus()
+        let s = min(img.size.width, img.size.height)
+        img.draw(in: NSRect(x: 0, y: 0, width: side, height: side), from: NSRect(x: (img.size.width - s) / 2, y: (img.size.height - s) / 2, width: s, height: s), operation: .copy, fraction: 1)
+        out.unlockFocus()
+        if let tiff = out.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
+            try? png.write(to: Dashboard.photoURL); m.photo = NSImage(contentsOf: Dashboard.photoURL)
         }
     }
 }

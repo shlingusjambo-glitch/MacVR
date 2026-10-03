@@ -1,5 +1,14 @@
 # Changes
 
+## 1.5.0
+
+- **Profiles.** Photo, name, status and bio. Edit in the headset or in Settings > Profile on the Mac. Stays on your Mac.
+- **New dock left side:** profile, a status pill (time, Wi-Fi, left and right controllers), notifications with an unread dot, and search, all as squircles in the dock's tint.
+- **New notifications.** Horizon-style cards that open from the middle out and close the same way, with the AOSP notification sound.
+- **Skin colour:** presets are back, plus Grey. Skin is now a lit, slightly shiny material.
+- **Library:** no more Next/Previous bar; the grid uses the full height and scrolls.
+- Dock gets the windows' tint.
+
 ## 1.4.0
 
 - **Update channels.** Settings > Updates > Update Channel: Public (default) or Beta, which also gets pre-releases first.
