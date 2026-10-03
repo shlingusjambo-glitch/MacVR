@@ -105,6 +105,15 @@ final class Compositor {
             laser.pivot = SCNMatrix4MakeTranslation(0, -0.5, 0); laser.eulerAngles.x = -.pi / 2
             laser.geometry?.firstMaterial?.diffuse.contents = NSColor(red: 0.4, green: 0.75, blue: 0.96, alpha: 1)
             laser.geometry?.firstMaterial?.lightingModel = .constant
+            laser.geometry?.firstMaterial?.blendMode = .alpha
+            laser.geometry?.firstMaterial?.transparencyMode = .aOne
+            laser.geometry?.firstMaterial?.writesToDepthBuffer = false
+            laser.geometry?.firstMaterial?.readsFromDepthBuffer = true
+            laser.renderingOrder = 199
+            laser.geometry?.firstMaterial?.shaderModifiers = [
+                .geometry: "#pragma varyings\nfloat rayProgress;\n#pragma body\nout.rayProgress = _geometry.position.y + 0.5;",
+                .fragment: "#pragma transparent\n#pragma body\n_output.color.a *= 1.0 - smoothstep(0.55, 1.0, in.rayProgress);"
+            ]
             aim.addChildNode(laser)
             let dot = Compositor.cursor()
             [grip, aim, dot].forEach(scene.rootNode.addChildNode)
@@ -114,6 +123,9 @@ final class Compositor {
     /// Controller mesh plus the translucent hand holding it (rigs index by hand).
     private func attachController(_ grip: SCNNode, hand i: Int) {
         let ctl = ControllerModels.build(controllerModel, hand: i), hm = HandModel(hand: i, model: controllerModel, controller: ctl)
+        // Draw held controllers after shell panels and before translucent hands.
+        ctl.renderingOrder = 140
+        ctl.enumerateChildNodes { node, _ in node.renderingOrder = 140 }
         grip.addChildNode(ctl)
         if let hm { grip.addChildNode(hm.node) }
         if rigs.count > i { rigs[i] = ControllerRig(ctl, hand: i); handModels[i] = hm } else { rigs.append(ControllerRig(ctl, hand: i)); handModels.append(hm) }
@@ -350,7 +362,7 @@ final class Compositor {
         if space.geometry == nil {
             let g = SCNSphere(radius: 100); g.segmentCount = 96   // well inside the 300 m far plane, or the home leaks through
             let m = g.firstMaterial!; m.diffuse.contents = Compositor.starfield(); m.lightingModel = .constant
-            m.cullMode = .front; m.writesToDepthBuffer = false; m.readsFromDepthBuffer = false
+            m.cullMode = .back; m.writesToDepthBuffer = false; m.readsFromDepthBuffer = false
             m.diffuse.contentsTransform = SCNMatrix4MakeScale(-1, 1, 1); m.diffuse.wrapS = .repeat   // seen from inside
             space.geometry = g; space.renderingOrder = -150; space.isHidden = true
             scene.rootNode.addChildNode(space)
@@ -376,7 +388,7 @@ final class Compositor {
     static func skySphere(radius: CGFloat) -> SCNNode {
         let g = SCNSphere(radius: radius); g.segmentCount = 96
         let m = g.firstMaterial!; m.lightingModel = .constant
-        m.cullMode = .front; m.writesToDepthBuffer = false; m.readsFromDepthBuffer = false
+        m.cullMode = .back; m.writesToDepthBuffer = false; m.readsFromDepthBuffer = false
         m.diffuse.contentsTransform = SCNMatrix4MakeScale(-1, 1, 1); m.diffuse.wrapS = .repeat   // seen from inside
         let n = SCNNode(geometry: g); n.simdEulerAngles = SIMD3(0, skyYaw, 0); return n
     }
@@ -464,7 +476,7 @@ final class Compositor {
         guard !reduceMotion else { return }
         if veil.geometry == nil {   // a small black sphere around the eyes, drawn over everything
             let g = SCNSphere(radius: 0.3); g.segmentCount = 24
-            let m = g.firstMaterial!; m.diffuse.contents = NSColor.black; m.lightingModel = .constant; m.cullMode = .front
+            let m = g.firstMaterial!; m.diffuse.contents = NSColor.black; m.lightingModel = .constant; m.cullMode = .back
             m.writesToDepthBuffer = false; m.readsFromDepthBuffer = false
             veil.geometry = g; veil.renderingOrder = 1000; scene.rootNode.addChildNode(veil)
         }
@@ -530,80 +542,184 @@ final class Compositor {
     private let homeArchitecture = SCNNode()
     private var homeStyle = ""
     private var homeOccluded: Bool { scene.background.contents == nil || (theater.parent != nil && !theater.isHidden && theaterStyle.lights != "Home") || (space.parent != nil && !space.isHidden) || loading }
-    func setHomeStyle(_ style: String) {
-        guard homeStyle != style else { return }
-        SCNTransaction.begin(); SCNTransaction.animationDuration = 0
-        defer { SCNTransaction.commit() }
-        homeStyle = style
-        homeArchitecture.name = "MacVR Home Architecture"
-        homeArchitecture.removeFromParentNode()
-        homeArchitecture.childNodes.forEach { $0.removeFromParentNode() }
-        guard style != "Open vista" else { return }
-        scene.rootNode.addChildNode(homeArchitecture)
-        let observatory = style == "Observatory"
-        func material(_ color: NSColor, glow: Bool = false) -> SCNMaterial {
-            let m = SCNMaterial(); m.diffuse.contents = color
-            m.lightingModel = .physicallyBased; m.roughness.contents = 0.78
-            if glow { m.emission.contents = color }
-            return m
+    private struct HomeTriangle {
+        let a, b, c, lo, hi: SIMD3<Float>
+        init(_ a: SIMD3<Float>, _ b: SIMD3<Float>, _ c: SIMD3<Float>) {
+            self.a = a; self.b = b; self.c = c; lo = simd_min(a, simd_min(b, c)); hi = simd_max(a, simd_max(b, c))
         }
-        let stone = material(NSColor(red: 0.24, green: 0.29, blue: 0.34, alpha: 1))
-        let wood = material(NSColor(red: 0.40, green: 0.28, blue: 0.19, alpha: 1))
-        let light = material(observatory ? NSColor(red: 0.27, green: 0.65, blue: 0.9, alpha: 1) : NSColor(red: 0.95, green: 0.71, blue: 0.39, alpha: 1), glow: true)
-        func add(_ geometry: SCNGeometry, _ x: Float, _ y: Float, _ z: Float, _ mat: SCNMaterial) -> SCNNode {
-            geometry.materials = [mat]
-            let n = SCNNode(geometry: geometry); n.position = SCNVector3(x, y, z)
-            homeArchitecture.addChildNode(n); return n
-        }
-        let platform = SCNCylinder(radius: 5.2, height: 0.16); platform.radialSegmentCount = 64
-        let deck = material(observatory ? NSColor(white: 0.18, alpha: 1) : NSColor(red: 0.38, green: 0.27, blue: 0.19, alpha: 1))
-        if let canvas = CGContext(data: nil, width: 512, height: 512, bitsPerComponent: 8, bytesPerRow: 0,
-                                  space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {
-            for row in 0..<24 {
-                let variation = CGFloat((row * 7) % 5) * 0.012
-                canvas.setFillColor(CGColor(red: (observatory ? 0.16 : 0.30) + variation, green: (observatory ? 0.20 : 0.21) + variation,
-                                            blue: (observatory ? 0.25 : 0.14) + variation, alpha: 1))
-                canvas.fill(CGRect(x: 0, y: row * 22, width: 512, height: 21))
-                canvas.setFillColor(CGColor(gray: 0.06, alpha: 1))
-                canvas.fill(CGRect(x: 0, y: row * 22 + 21, width: 512, height: 1))
-                canvas.fill(CGRect(x: row % 2 == 0 ? 180 : 340, y: row * 22, width: 1, height: 21))
+    }
+    private var homeTriangles: [HomeTriangle] = []
+    private func collectHomeCollision() {
+        homeTriangles = []
+        homeArchitecture.enumerateChildNodes { node, _ in
+            guard let geometry = node.geometry, let source = geometry.sources(for: .vertex).first, source.usesFloatComponents, source.bytesPerComponent == 4 else { return }
+            let points: [SIMD3<Float>] = source.data.withUnsafeBytes { bytes in
+                (0..<source.vectorCount).map { i in
+                    let offset = source.dataOffset + i * source.dataStride
+                    let p = SIMD3<Float>(bytes.loadUnaligned(fromByteOffset: offset, as: Float.self), bytes.loadUnaligned(fromByteOffset: offset + 4, as: Float.self), bytes.loadUnaligned(fromByteOffset: offset + 8, as: Float.self))
+                    return node.simdConvertPosition(p, to: self.homeArchitecture)
+                }
             }
-            deck.diffuse.contents = canvas.makeImage()
-        }
-        _ = add(platform, 0, -0.12, 0, deck)
-        let rim = SCNTorus(ringRadius: 5.0, pipeRadius: 0.025); rim.ringSegmentCount = 64; rim.pipeSegmentCount = 6
-        _ = add(rim, 0, -0.025, 0, light)
-        // Columns stay to the sides and rear, leaving the forward panorama unobstructed.
-        for i in 0..<8 {
-            let a = Float(i) * .pi / 4
-            let x = sin(a) * 4.7, z = cos(a) * 4.7
-            if z < -4 { continue }
-            let column = SCNCylinder(radius: observatory ? 0.065 : 0.11, height: 3.6); column.radialSegmentCount = 8
-            _ = add(column, x, 1.72, z, observatory ? stone : wood)
-            let lamp = SCNSphere(radius: 0.10); lamp.segmentCount = 8
-            _ = add(lamp, x, 2.8, z, light)
-        }
-        let canopy = SCNTorus(ringRadius: 4.7, pipeRadius: observatory ? 0.055 : 0.12)
-        canopy.ringSegmentCount = 64; canopy.pipeSegmentCount = 8
-        _ = add(canopy, 0, 3.52, 0, observatory ? light : wood)
-        if observatory {
-            for i in 0..<3 {
-                let orbit = SCNTorus(ringRadius: CGFloat(4.4 - Double(i) * 0.25), pipeRadius: 0.018)
-                orbit.ringSegmentCount = 64; orbit.pipeSegmentCount = 4
-                let n = add(orbit, 0, 4.2 + Float(i) * 0.2, 0, light)
-                n.eulerAngles = SCNVector3(Float(i + 1) * 0.18, 0, Float(i) * 0.22)
-            }
-        } else {
-            for x: Float in [-3.5, 3.5] {
-                _ = add(SCNBox(width: 0.7, height: 0.6, length: 0.7, chamferRadius: 0.06), x, 0.22, -3.3, stone)
-                for i in 0..<5 {
-                    let leaf = SCNSphere(radius: 0.32); leaf.segmentCount = 10
-                    let n = add(leaf, x + Float(i % 2) * 0.18 - 0.09, 0.75 + Float(i) * 0.12, -3.3, material(NSColor(red: 0.13, green: 0.32 + Double(i) * 0.025, blue: 0.24, alpha: 1)))
-                    n.scale = SCNVector3(0.8, 1.7, 0.7)
+            for element in geometry.elements where element.primitiveType == .triangles {
+                element.data.withUnsafeBytes { bytes in
+                    func index(_ i: Int) -> Int { element.bytesPerIndex == 2 ? Int(bytes.loadUnaligned(fromByteOffset: i * 2, as: UInt16.self)) : Int(bytes.loadUnaligned(fromByteOffset: i * 4, as: UInt32.self)) }
+                    for i in 0..<element.primitiveCount {
+                        let a = index(i * 3), b = index(i * 3 + 1), c = index(i * 3 + 2)
+                        if points.indices.contains(a) && points.indices.contains(b) && points.indices.contains(c) { self.homeTriangles.append(HomeTriangle(points[a], points[b], points[c])) }
+                    }
                 }
             }
         }
-        homeArchitecture.isHidden = homeOccluded
+    }
+    private func homeSegmentBlocked(_ start: SIMD3<Float>, _ end: SIMD3<Float>) -> Bool {
+        let direction = end - start, lo = simd_min(start, end), hi = simd_max(start, end)
+        for triangle in homeTriangles {
+            if triangle.hi.x < lo.x || triangle.lo.x > hi.x || triangle.hi.y < lo.y || triangle.lo.y > hi.y || triangle.hi.z < lo.z || triangle.lo.z > hi.z { continue }
+            let e1 = triangle.b - triangle.a, e2 = triangle.c - triangle.a, cross = simd_cross(direction, e2), determinant = simd_dot(e1, cross)
+            if abs(determinant) < 0.000001 { continue }
+            let inverse = 1 / determinant, delta = start - triangle.a, u = simd_dot(delta, cross) * inverse
+            if u < 0 || u > 1 { continue }
+            let q = simd_cross(delta, e1), v = simd_dot(direction, q) * inverse
+            if v < 0 || u + v > 1 { continue }
+            let t = simd_dot(e2, q) * inverse
+            if t > 0.001 && t < 0.999 { return true }
+        }
+        return false
+    }
+    private let teleportPoints = SCNNode(), teleportBeam = SCNNode(geometry: SCNCylinder(radius: 0.003, height: 1))
+    private var teleportLocations: [SIMD3<Float>] = [], teleportMarkers: [SCNNode] = []
+    private var teleportHeld = false, teleportHand: Int?, teleportSelection: Int?
+    private lazy var teleportDot = teleportTexture(ring: false)
+    private lazy var teleportCircle = teleportTexture(ring: true)
+    private func teleportTexture(ring: Bool) -> CGImage? {
+        let c = Self.overlayCanvas(128, 128), r = CGRect(x: 8, y: 8, width: 112, height: 112)
+        if ring { c.addEllipse(in: r); c.addEllipse(in: r.insetBy(dx: 13, dy: 13)); c.clip(using: .evenOdd) }
+        else { c.addEllipse(in: r); c.clip() }
+        let gradient = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB), colors: [NSColor.systemBlue.cgColor, NSColor.systemPurple.cgColor] as CFArray, locations: [0, 1])!
+        c.drawLinearGradient(gradient, start: CGPoint(x: 8, y: 8), end: CGPoint(x: 120, y: 120), options: [])
+        return c.makeImage()
+    }
+    private func rebuildTeleportPoints() {
+        teleportPoints.removeFromParentNode(); teleportPoints.childNodes.forEach { $0.removeFromParentNode() }
+        teleportLocations = []; teleportMarkers = []; teleportHeld = false; teleportSelection = nil; teleportHand = nil
+        let floors = homeTriangles.filter { t in
+            let normal = simd_cross(t.b - t.a, t.c - t.a)
+            return abs(normal.y) > simd_length(normal) * 0.8 && t.lo.y >= -0.30 && t.hi.y <= 0.25
+        }
+        for x in -12...12 { for z in -12...12 {
+            let px = Float(x) * 0.85, pz = Float(z) * 0.85
+            var floorHeight: Float?
+            for triangle in floors {
+                guard px >= triangle.lo.x && px <= triangle.hi.x && pz >= triangle.lo.z && pz <= triangle.hi.z else { continue }
+                let e1 = triangle.b - triangle.a, e2 = triangle.c - triangle.a
+                let determinant = e1.x * e2.z - e1.z * e2.x
+                guard abs(determinant) > 0.000001 else { continue }
+                let dx = px - triangle.a.x, dz = pz - triangle.a.z
+                let u = (dx * e2.z - dz * e2.x) / determinant, v = (e1.x * dz - e1.z * dx) / determinant
+                if u >= -0.001 && v >= -0.001 && u + v <= 1.001 {
+                    let y = triangle.a.y + u * e1.y + v * e2.y
+                    floorHeight = max(floorHeight ?? y, y)
+                }
+            }
+            guard let y = floorHeight else { continue }
+            let location = SIMD3<Float>(px, y, pz)
+            var clear = true
+            for offset in [SIMD3<Float>(0.3, 0, 0), SIMD3(-0.3, 0, 0), SIMD3(0, 0, 0.3), SIMD3(0, 0, -0.3)] {
+                let start = location + SIMD3<Float>(0, 0.9, 0)
+                if homeSegmentBlocked(start, start + offset) { clear = false }
+            }
+            guard clear else { continue }
+            let marker = SCNNode(geometry: SCNPlane(width: 0.09, height: 0.09)); marker.simdPosition = location + SIMD3(0, 0.014, 0)
+            marker.simdEulerAngles.x = -.pi / 2; marker.geometry?.firstMaterial?.lightingModel = .constant
+            marker.geometry?.firstMaterial?.diffuse.contents = teleportDot; marker.geometry?.firstMaterial?.blendMode = .alpha
+            marker.geometry?.firstMaterial?.writesToDepthBuffer = false
+            teleportLocations.append(location); teleportMarkers.append(marker); teleportPoints.addChildNode(marker)
+        } }
+        NSLog("VR4Mac: %@ home loaded with %d walkable teleport points", homeStyle, teleportLocations.count)
+        homeArchitecture.addChildNode(teleportPoints); teleportPoints.isHidden = true
+        if teleportBeam.parent == nil { scene.rootNode.addChildNode(teleportBeam) }
+        teleportBeam.pivot = SCNMatrix4MakeTranslation(0, -0.5, 0)
+        teleportBeam.geometry?.firstMaterial?.lightingModel = .constant; teleportBeam.geometry?.firstMaterial?.diffuse.contents = NSColor.systemBlue
+        teleportBeam.isHidden = true
+    }
+    /// Forward stick holds teleport aiming; release commits only a snapped, walkable floor point.
+    func updateTeleport(_ t: VR4Tracking, enabled: Bool) -> Bool {
+        let hands = [t.hand.0, t.hand.1]
+        let requested = hands.indices.first { hands[$0].flags & UInt32(VR4_HAND_POSE_VALID) != 0 && hands[$0].stick_y > 0.65 }
+        let held = enabled && !homeOccluded && requested != nil
+        if !held {
+            if teleportHeld, enabled, !homeOccluded, let selection = teleportSelection, let hand = teleportHand, hands[hand].flags & UInt32(VR4_HAND_POSE_VALID) != 0 {
+                let point = teleportLocations[selection] + homeOffset
+                homeOffset += SIMD3(t.head.px - point.x, -point.y, t.head.pz - point.z)
+                homeArchitecture.simdPosition = homeOffset
+            }
+            teleportHeld = false; teleportSelection = nil; teleportHand = nil; teleportPoints.isHidden = true; teleportBeam.isHidden = true; return false
+        }
+        teleportHeld = true; teleportHand = requested; teleportPoints.isHidden = false
+        var (origin, direction) = ray(hands[requested!].aim)
+        if let trigger = self.hands[requested!].grip.childNode(withName: "trigger", recursively: true) {
+            let (lo, hi) = trigger.boundingBox
+            let local = trigger.simdConvertPosition(SIMD3(Float(lo.x + hi.x) / 2, Float(lo.y + hi.y) / 2, Float(lo.z) - 0.006), to: self.hands[requested!].grip)
+            let grip = hands[requested!].grip
+            origin = SIMD3(grip.px, grip.py, grip.pz) + simd_quatf(ix: grip.qx, iy: grip.qy, iz: grip.qz, r: grip.qw).act(local)
+        }
+        teleportSelection = nil
+        var arc = [origin], velocity = direction * 4.5 + SIMD3<Float>(0, 1.0, 0)
+        var position = origin
+        for _ in 0..<70 {
+            let next = position + velocity * 0.035 + SIMD3<Float>(0, -2.75 * 0.035 * 0.035, 0)
+            velocity.y -= 5.5 * 0.035
+            arc.append(next)
+            if homeSegmentBlocked(position - homeOffset, next - homeOffset) || next.y < homeOffset.y - 0.30 { break }
+            position = next
+        }
+        let landing = arc.last!
+        var best: Float = 0.42
+        for (i, local) in teleportLocations.enumerated() {
+            let point = local + homeOffset
+            guard abs(point.y - landing.y) < 0.30 else { continue }
+            let delta = simd_length(SIMD2(point.x - landing.x, point.z - landing.z))
+            if delta < best { best = delta; teleportSelection = i }
+        }
+        if let selection = teleportSelection { arc[arc.count - 1] = teleportLocations[selection] + homeOffset + SIMD3(0, 0.02, 0) }
+        drawTeleportArc(arc)
+        for (i, marker) in teleportMarkers.enumerated() {
+            let selected = i == teleportSelection
+            marker.geometry?.firstMaterial?.diffuse.contents = selected ? teleportCircle : teleportDot
+            marker.simdScale = SIMD3(repeating: selected ? 3.5 : 1)
+        }
+        teleportBeam.isHidden = false
+        return true
+    }
+    private func drawTeleportArc(_ points: [SIMD3<Float>]) {
+        var vertices: [SCNVector3] = [], colors = Data(), indices: [Int32] = []
+        for i in points.indices {
+            let tangent = simd_normalize(points[min(i + 1, points.count - 1)] - points[max(0, i - 1)])
+            let reference: SIMD3<Float> = abs(tangent.y) > 0.95 ? SIMD3(1, 0, 0) : SIMD3(0, 1, 0)
+            let x = simd_normalize(simd_cross(tangent, reference)), y = simd_cross(tangent, x)
+            let progress = Float(i) / Float(max(1, points.count - 1))
+            for j in 0..<6 {
+                let angle = Float(j) * 2 * .pi / 6
+                vertices.append(SCNVector3(points[i] + (x * cos(angle) + y * sin(angle)) * 0.004))
+                var color = SIMD4<Float>(0.15 + progress * 0.5, 0.4 - progress * 0.18, 1, 1)
+                withUnsafeBytes(of: &color) { colors.append(contentsOf: $0) }
+                if i > 0 { let a = Int32((i - 1) * 6 + j), b = Int32((i - 1) * 6 + (j + 1) % 6), c = Int32(i * 6 + j), d = Int32(i * 6 + (j + 1) % 6); indices += [a, b, c, b, d, c] }
+            }
+        }
+        let g = SCNGeometry(sources: [SCNGeometrySource(vertices: vertices), SCNGeometrySource(data: colors, semantic: .color, vectorCount: vertices.count, usesFloatComponents: true, componentsPerVector: 4, bytesPerComponent: 4, dataOffset: 0, dataStride: 16)], elements: [SCNGeometryElement(indices: indices, primitiveType: .triangles)])
+        g.firstMaterial?.lightingModel = .constant; g.firstMaterial?.diffuse.contents = NSColor.white
+        g.firstMaterial?.readsFromDepthBuffer = false; g.firstMaterial?.writesToDepthBuffer = false
+        teleportBeam.geometry = g; teleportBeam.simdTransform = matrix_identity_float4x4; teleportBeam.pivot = SCNMatrix4Identity; teleportBeam.renderingOrder = 199
+    }
+    private var homeOffset = SIMD3<Float>.zero
+    func setHomeStyle(_ style: String) {
+        guard homeStyle != style else { return }
+        homeStyle = style; homeOffset = .zero
+        homeArchitecture.childNodes.forEach { $0.removeFromParentNode() }
+        if homeArchitecture.parent == nil { scene.rootNode.addChildNode(homeArchitecture) }
+        if let model = ControllerGLB.home(style == "Kleeblatt" ? "kleeblatt" : "room1107") { homeArchitecture.addChildNode(model) }
+        homeArchitecture.simdPosition = .zero; homeArchitecture.isHidden = homeOccluded
+        collectHomeCollision(); rebuildTeleportPoints()
     }
 
     // MARK: home environments (CC0 panoramas) or the purple void
@@ -973,7 +1089,7 @@ final class Compositor {
                 let a = n.simdConvertPosition(o, from: nil), b = n.simdConvertPosition(o + d * 10, from: nil)
                 guard let h = n.hitTestWithSegment(from: SCNVector3(a), to: SCNVector3(b), options: [SCNHitTestOption.backFaceCulling.rawValue: false]).first else { continue }
                 let dist = simd_distance(o, h.simdWorldCoordinates)
-                if dist < best?.dist ?? .infinity { best = (id, h.textureCoordinates(withMappingChannel: 0), dist, isBar) }
+                if dist < best?.dist ?? .infinity { best = (id, h.textureCoordinates(withMappingChannel: 0), dist, isBar); rememberPointerSurface(h, aim: aim) }
             }
         }
         return best
@@ -1028,6 +1144,7 @@ final class Compositor {
         let (o, d) = ray(aim)
         let a = picker.simdConvertPosition(o, from: nil), b = picker.simdConvertPosition(o + d * 10, from: nil)
         guard let h = picker.hitTestWithSegment(from: SCNVector3(a), to: SCNVector3(b), options: [SCNHitTestOption.backFaceCulling.rawValue: false]).first else { return nil }
+        rememberPointerSurface(h, aim: aim)
         let t = h.textureCoordinates(withMappingChannel: 0)
         return (CGPoint(x: t.x, y: t.y), simd_distance(o, h.simdWorldCoordinates))
     }
@@ -1179,6 +1296,7 @@ final class Compositor {
         let a = theater.simdConvertPosition(o, from: nil), b = theater.simdConvertPosition(o + d * 30, from: nil)
         guard let h = theater.hitTestWithSegment(from: SCNVector3(a), to: SCNVector3(b), options: [SCNHitTestOption.backFaceCulling.rawValue: false]).first
         else { return nil }
+        rememberPointerSurface(h, aim: aim)
         return (h.textureCoordinates(withMappingChannel: 0), simd_distance(o, h.simdWorldCoordinates))
     }
 
@@ -1235,7 +1353,7 @@ final class Compositor {
             let a = n.simdConvertPosition(o, from: nil), b = n.simdConvertPosition(o + d * 10, from: nil)
             for h in n.hitTestWithSegment(from: SCNVector3(a), to: SCNVector3(b), options: [SCNHitTestOption.backFaceCulling.rawValue: false]) {
                 let dist = simd_distance(o, h.simdWorldCoordinates), uv = h.textureCoordinates(withMappingChannel: 0)
-                if solid(uv, slot), dist < best?.dist ?? .infinity { best = (uv, dist, slot) }   // lasers pass through transparent gaps
+                if solid(uv, slot), dist < best?.dist ?? .infinity { best = (uv, dist, slot); rememberPointerSurface(h, aim: aim) }   // lasers pass through transparent gaps
             }
         }
         return best
@@ -1271,14 +1389,199 @@ final class Compositor {
     var lasersAlways = false   // theater: lasers drive the Mac even with the menu closed
     /// `push`: offset holding a hand (and its controller) on a panel it touches. `poke`: hand near the menu points its
     /// index (and hides its laser).
+    var skinTone = "Original" { didSet { if skinTone != oldValue { mirrorMaterials.removeAll() } } }
+    var showBody = false, showMirror = false
+    private let avatarBody = SCNNode(), avatarReflection = SCNNode(), homeMirror = SCNNode()
+    private var reflectedHands: [SCNNode] = []
+    private var mirrorMaterials: [ObjectIdentifier: SCNMaterial] = [:]
+    private var proximity: [ObjectIdentifier: Float] = [:]
+    private var torsoYaw: Float?
+    private var avatarTime = CACurrentMediaTime()
+    /// Extend the original arm shoulder boundary loops into one connected chest/waist surface.
+    private func updateTorsoMesh() {
+        guard showBody, handModels.count == 2, let left = handModels[0], let right = handModels[1] else { return }
+        var loopOrder: [[Int]] = [[], []]
+        let loops = [left.shoulderRim, right.shoulderRim].enumerated().map { side, ring -> [SIMD3<Float>] in
+            var points = ring.map { avatarBody.simdConvertPosition($0, from: nil) }
+            guard points.count == 8 else { return [] }
+            var center = points.reduce(SIMD3<Float>.zero, +) / 8
+            if hands[side].grip.isHidden {
+                // Keep the torso's shoulder seam stable when one controller loses tracking.
+                let target = SIMD3<Float>(side == 0 ? -0.16 : 0.16, 0.59, 0)
+                let normal = simd_normalize(simd_cross(points[1] - points[0], points[2] - points[0]))
+                let rotation = simd_quatf(from: normal, to: SIMD3<Float>(side == 0 ? -1 : 1, 0, 0))
+                points = points.map { target + rotation.act($0 - center) }; center = target
+            }
+            let order = points.indices.sorted { atan2(points[$0].z - center.z, points[$0].y - center.y) < atan2(points[$1].z - center.z, points[$1].y - center.y) }
+            loopOrder[side] = order.map { [left, right][side].shoulderVertexIndices[$0] }
+            return order.map { points[$0] }
+        }
+        guard loops.allSatisfy({ $0.count == 8 }) else { return }
+        var vertices = loops[0] + loops[1], indices: [Int32] = []
+        func quad(_ a: Int, _ b: Int, _ c: Int, _ d: Int) { indices += [a, b, c, a, c, d].map(Int32.init) }
+        // Connect the upper shoulder arcs across the chest. Remaining arcs form the torso perimeter.
+        for i in 2..<6 { quad(i, i + 1, 8 + i + 1, 8 + i) }
+        var perimeter = [6, 7, 0, 1, 2, 10, 9, 8, 15, 14]
+        let source = perimeter.map { vertices[$0] }
+        for (y, width, depth) in [(Float(0.38), Float(0.155), Float(0.085)), (0.20, 0.125, 0.07), (0.02, 0.135, 0.08)] {
+            var next: [Int] = []
+            for i in source.indices {
+                // Sculpt the continued shoulder perimeter into full chest/waist cross-sections.
+                let angle = Float.pi / 2 + Float(i) * 2 * .pi / Float(source.count)
+                next.append(vertices.count); vertices.append(SIMD3(cos(angle) * width, y, sin(angle) * depth))
+            }
+            for i in perimeter.indices { let j = (i + 1) % perimeter.count; quad(perimeter[i], perimeter[j], next[j], next[i]) }
+            perimeter = next
+        }
+        // Weld torso faces to the existing arm vertex indices, then include the original skinned hands/arms.
+        var welded: [SIMD3<Float>] = [], armIndices: [Int32] = [], remap: [Int] = []
+        for (side, model) in [left, right].enumerated() {
+            let offset = welded.count
+            let points = model.posedVertices.map { avatarBody.simdConvertPosition(model.node.simdConvertPosition($0, to: nil), from: nil) }
+            welded += points
+            for (point, originalIndex) in zip(loops[side], loopOrder[side]) {
+                remap.append(offset + originalIndex)
+                welded[offset + originalIndex] = point
+            }
+            if !hands[side].grip.isHidden { armIndices += model.torsoTriangles.map { $0 + Int32(offset) } }
+        }
+        for i in 16..<vertices.count { remap.append(welded.count); welded.append(vertices[i]) }
+        indices = armIndices + indices.map { Int32(remap[Int($0)]) }
+        vertices = welded
+        var normals = [SIMD3<Float>](repeating: .zero, count: vertices.count)
+        for i in stride(from: 0, to: indices.count, by: 3) {
+            let a = Int(indices[i]), b = Int(indices[i + 1]), c = Int(indices[i + 2]), n = simd_cross(vertices[b] - vertices[a], vertices[c] - vertices[a])
+            normals[a] += n; normals[b] += n; normals[c] += n
+        }
+        let g = SCNGeometry(sources: [SCNGeometrySource(vertices: vertices.map { SCNVector3($0) }), SCNGeometrySource(normals: normals.map { SCNVector3(simd_length_squared($0) > 1e-14 ? simd_normalize($0) : SIMD3(0, 1, 0)) })], elements: [SCNGeometryElement(indices: indices, primitiveType: .triangles)])
+        // Match hand shading with smooth vertex normals along the shared shoulder rim.
+        g.materials = [left.node.geometry?.firstMaterial ?? SCNMaterial()]; g.subdivisionLevel = 0
+        avatarBody.childNodes.first?.geometry = g
+        avatarBody.childNodes.first?.renderingOrder = 150
+    }
+    private func buildAvatar() {
+        guard avatarBody.parent == nil else { return }
+        avatarBody.addChildNode(SCNNode()) // torso geometry extends the original shoulder rings each frame
+        scene.rootNode.addChildNode(avatarBody); scene.rootNode.addChildNode(avatarReflection); scene.rootNode.addChildNode(homeMirror)
+        avatarReflection.simdPosition = SIMD3(0, 0, -3); avatarReflection.simdScale = SIMD3(1, 1, -1)
+        // Reflection plane is fixed at z=-1.5; reflected geometry is clipped to the mirror aperture.
+        for (x, y, w, h) in [(Float(-0.73), Float(1.15), 0.06, 2.1), (0.73, 1.15, 0.06, 2.1), (0, 0.12, 1.5, 0.06), (0, 2.18, 1.5, 0.06)] {
+            let frame = SCNNode(geometry: SCNBox(width: w, height: h, length: 0.04, chamferRadius: 0.02))
+            frame.simdPosition = SIMD3(x, y, -1.5); frame.geometry?.firstMaterial?.diffuse.contents = NSColor.darkGray; homeMirror.addChildNode(frame)
+        }
+        let glass = SCNNode(geometry: SCNPlane(width: 1.4, height: 2)); glass.simdPosition = SIMD3(0, 1.15, -1.49)
+        glass.geometry?.firstMaterial?.diffuse.contents = NSColor(calibratedWhite: 0.8, alpha: 0.12)
+        glass.geometry?.firstMaterial?.writesToDepthBuffer = false; glass.geometry?.firstMaterial?.isDoubleSided = true; glass.geometry?.firstMaterial?.blendMode = .alpha
+        homeMirror.addChildNode(glass)
+        for _ in 0..<2 { let n = SCNNode(); avatarReflection.addChildNode(n); reflectedHands.append(n) }
+    }
+    private func mirrorGeometry(_ source: SCNGeometry, head: SIMD3<Float>) -> SCNGeometry {
+        // Preserve SceneKit primitive dimensions and subdivision. The reflected
+        // renderer handles reflected transforms; retain exterior faces only.
+        let g = source.copy() as! SCNGeometry
+        g.materials = source.materials.map { original in
+            let key = ObjectIdentifier(original)
+            if let cached = mirrorMaterials[key] {
+                cached.setValue(NSValue(scnVector3: SCNVector3(head)), forKey: "mirrorEye")
+                cached.diffuse.contents = original.diffuse.contents
+                cached.setValue(NSValue(scnVector3: SCNVector3(homeOffset + SIMD3(0, 1.15, -1.5))), forKey: "mirrorCenter")
+                return cached
+            }
+            let m = original.copy() as! SCNMaterial
+            var shaders = m.shaderModifiers ?? [:]
+            shaders[.geometry] = "#pragma varyings\nfloat3 mirrorWorld;\n#pragma body\nout.mirrorWorld = (scn_node.modelTransform * _geometry.position).xyz;"
+            var fragment = shaders[.fragment] ?? "#pragma body\n"
+            if fragment.contains("#pragma arguments") { fragment = fragment.replacingOccurrences(of: "#pragma arguments", with: "#pragma arguments\nfloat3 mirrorEye;\nfloat3 mirrorCenter;") }
+            else { fragment = "#pragma arguments\nfloat3 mirrorEye;\nfloat3 mirrorCenter;\n" + fragment }
+            fragment += "\nfloat dz = in.mirrorWorld.z - mirrorEye.z;\nfloat hitT = (mirrorCenter.z - mirrorEye.z) / (abs(dz) < 0.0001 ? 0.0001 : dz);\nfloat3 hit = mirrorEye + hitT * (in.mirrorWorld - mirrorEye);\nif (hitT <= 0.0 || hitT >= 1.0 || abs(hit.x - mirrorCenter.x) > 0.7 || abs(hit.y - mirrorCenter.y) > 1.0) discard_fragment();"
+            shaders[.fragment] = fragment; m.shaderModifiers = shaders
+            m.readsFromDepthBuffer = false; m.writesToDepthBuffer = false
+            m.setValue(NSValue(scnVector3: SCNVector3(head)), forKey: "mirrorEye"); m.isDoubleSided = false; m.cullMode = .back
+            m.setValue(NSValue(scnVector3: SCNVector3(homeOffset + SIMD3(0, 1.15, -1.5))), forKey: "mirrorCenter")
+            mirrorMaterials[key] = m
+            return m
+        }
+        return g
+    }
+    private func updateAvatar(_ t: VR4Tracking) {
+        buildAvatar()
+        let head = (SIMD3(t.eye.0.pose.px, t.eye.0.pose.py, t.eye.0.pose.pz) + SIMD3(t.eye.1.pose.px, t.eye.1.pose.py, t.eye.1.pose.pz)) / 2
+        let p = t.eye.0.pose, direction = simd_quatf(ix: p.qx, iy: p.qy, iz: p.qz, r: p.qw).act(SIMD3<Float>(0, 0, -1))
+        let orientation = simd_quatf(ix: p.qx, iy: p.qy, iz: p.qz, r: p.qw)
+        let yaw = atan2(-direction.x, -direction.z)
+        let previous = torsoYaw ?? yaw, delta = atan2(sin(yaw - previous), cos(yaw - previous))
+        torsoYaw = previous + (abs(delta) > 0.45 ? delta * 0.06 : 0)
+        let pitch = asin(simd_clamp(direction.y, -1, 1)), roll = atan2(orientation.act(SIMD3<Float>(0, 1, 0)).x, orientation.act(SIMD3<Float>(0, 1, 0)).y)
+        let torsoRotation = simd_quatf(angle: torsoYaw!, axis: SIMD3(0, 1, 0)) * simd_quatf(angle: simd_clamp(pitch * 0.22, -0.22, 0.22), axis: SIMD3(1, 0, 0)) * simd_quatf(angle: simd_clamp(-roll * 0.15, -0.12, 0.12), axis: SIMD3(0, 0, 1))
+        let neck = head + orientation.act(SIMD3<Float>(0, -0.11, 0.10))
+        avatarBody.simdOrientation = torsoRotation
+        avatarBody.simdPosition = neck + torsoRotation.act(SIMD3<Float>(0, -0.66, 0.055))
+        homeMirror.simdPosition = homeOffset
+        avatarReflection.simdPosition = SIMD3(0, 0, 2 * (homeOffset.z - 1.5))
+        let home = scene.background.contents != nil && !homeOccluded
+        avatarBody.isHidden = !showBody || !home; homeMirror.isHidden = !showMirror || !home; avatarReflection.isHidden = homeMirror.isHidden
+        if showBody {
+            let shoulderHead = neck + torsoRotation.act(SIMD3<Float>(0, 0.11, -0.10))
+            let torsoForward = simd_quatf(angle: torsoYaw!, axis: SIMD3<Float>(0, 1, 0)).act(SIMD3<Float>(0, 0, -1))
+            for i in handModels.indices where !hands[i].grip.isHidden { handModels[i]?.updateArm(head: shoulderHead, forward: torsoForward) }
+        }
+        updateTorsoMesh()
+        // Copy live skinned geometry; reflect world poses, preserving each hand's full rig.
+        for i in handModels.indices {
+            reflectedHands[i].renderingOrder = 5
+            reflectedHands[i].geometry = handModels[i]?.node.geometry.map { mirrorGeometry($0, head: head) }
+            reflectedHands[i].simdTransform = handModels[i]?.node.simdWorldTransform ?? matrix_identity_float4x4
+            reflectedHands[i].isHidden = hands[i].grip.isHidden || showBody
+        }
+        // Keep one reflected body, updated as options change.
+        if avatarReflection.childNode(withName: "Reflected torso", recursively: false) == nil { let clone = avatarBody.clone(); clone.name = "Reflected torso"; avatarReflection.addChildNode(clone) }
+        let body = avatarReflection.childNode(withName: "Reflected torso", recursively: false)!; body.simdTransform = avatarBody.simdTransform; body.isHidden = avatarBody.isHidden
+        for (n, original) in zip(body.childNodes, avatarBody.childNodes) {
+            n.renderingOrder = 5
+            if let geometry = original.geometry { n.geometry = mirrorGeometry(geometry, head: head) }
+        }
+        let now = CACurrentMediaTime(), alpha = Float(1 - exp(-min(0.05, now - avatarTime) * 10)); avatarTime = now
+        var surfaces = [panel, dockPanel, kbPanel, picker, theater]
+        for side in sides { side.enumerateChildNodes { node, _ in if node.geometry != nil { surfaces.append(node) } } }
+        surfaces += windowPanels.values.flatMap { [$0.content, $0.bar] }
+        for ui in surfaces {
+            guard let geometry = ui.geometry else { continue }
+            // Signed panel-local distance and aperture checks avoid fading distant panels beside the head.
+            let local = ui.simdConvertPosition(head, from: nil), bounds = ui.boundingBox
+            let inside = local.x >= Float(bounds.min.x) - 0.12 && local.x <= Float(bounds.max.x) + 0.12 && local.y >= Float(bounds.min.y) - 0.12 && local.y <= Float(bounds.max.y) + 0.12
+            let distance = abs(local.z)
+            let target: Float = inside ? simd_clamp((0.25 - distance) / 0.17, 0, 1) : 0
+            let id = ObjectIdentifier(ui), old = proximity[id] ?? 0, value = old + (target - old) * alpha; proximity[id] = value
+            ui.opacity = CGFloat(1 - value * 0.9)
+            for material in geometry.materials {
+                material.writesToDepthBuffer = false
+                material.emission.contents = NSColor(calibratedWhite: CGFloat(value), alpha: 1)
+            }
+        }
+        // All dashboard surfaces leave the controller depth intact for pointer occlusion.
+        dash.enumerateChildNodes { n, _ in n.geometry?.materials.forEach { $0.writesToDepthBuffer = false } }
+    }
+    var showArms = false
     func updateHands(_ t: VR4Tracking, rays: [Float?], push: [SIMD3<Float>] = [.zero, .zero], poke: [Bool] = [false, false]) {
+        defer {
+            pointerSurfaces.removeAll(keepingCapacity: true)
+            let pose = t.eye.0.pose
+            let head = (SIMD3(pose.px, pose.py, pose.pz) + SIMD3(t.eye.1.pose.px, t.eye.1.pose.py, t.eye.1.pose.pz)) / 2
+            var forward = simd_quatf(ix: pose.qx, iy: pose.qy, iz: pose.qz, r: pose.qw).act(SIMD3<Float>(0, 0, -1)); forward.y = 0
+            forward = simd_length_squared(forward) > 0.001 ? simd_normalize(forward) : SIMD3(0, 0, -1)
+            for i in handModels.indices where !hands[i].grip.isHidden && !showBody { handModels[i]?.updateArm(head: head, forward: forward) }
+        }
         tickSlots()   // runs every frame: window snap animation
         let hs = [t.hand.0, t.hand.1]
         for (i, h) in hs.enumerated() {
             let valid = h.flags & UInt32(VR4_HAND_POSE_VALID) != 0
             let n = hands[i]
-            n.grip.isHidden = !valid; n.aim.isHidden = !valid || (dash.isHidden && !lasersAlways && rays[i] == nil)   // menu closed: only onto a pinned window
+            n.grip.isHidden = !valid || (scene.background.contents == nil && dash.isHidden); n.aim.isHidden = !valid || (dash.isHidden && !lasersAlways && rays[i] == nil)   // menu closed: only onto a pinned window
             let hm = handModels.count > i ? handModels[i] : nil
+            hm?.showArms = showArms || showBody
+            hm?.showTorso = showBody
+            hm?.node.opacity = showBody && !homeOccluded && scene.background.contents != nil ? 0 : 1
+            hm?.skinTone = skinTone
             for c in n.grip.childNodes where c !== hm?.node { c.isHidden = joints[i] != nil }   // tracked hand: no controller
             if let j = joints[i], let hm {   // hand tracking: the grip node only carries the direct-touch push
                 var g = matrix_identity_float4x4; g.columns.3 = SIMD4(push[i], 1); n.grip.simdTransform = g
@@ -1296,22 +1599,71 @@ final class Compositor {
             setLaser(n, h, rays[i])
         }
     }
+    private struct PointerSurface {
+        let origin, direction, position, normal, up: SIMD3<Float>
+        let distance: Float
+    }
+    private var pointerSurfaces: [PointerSurface] = []
+    private func rememberPointerSurface(_ hit: SCNHitTestResult, aim: VR4Pose) {
+        let (origin, direction) = ray(aim)
+        var normal = simd_normalize(hit.simdWorldNormal)
+        if simd_dot(normal, direction) > 0 { normal = -normal }
+        pointerSurfaces.append(PointerSurface(origin: origin, direction: direction,
+            position: hit.simdWorldCoordinates, normal: normal,
+            up: hit.node.simdConvertVector(SIMD3(0, 1, 0), to: nil),
+            distance: simd_distance(origin, hit.simdWorldCoordinates)))
+        if pointerSurfaces.count > 64 { pointerSurfaces.removeFirst() }
+    }
+    private func pointerSurface(aim: VR4Pose, distance: Float) -> PointerSurface? {
+        let (origin, direction) = ray(aim)
+        return pointerSurfaces.filter { simd_distance($0.origin, origin) < 0.001 && simd_distance($0.direction, direction) < 0.001 && abs($0.distance - distance) < 0.005 }
+            .min { abs($0.distance - distance) < abs($1.distance - distance) }
+    }
+    /// Surface tangent basis keeps the cursor flush to curved/tilted UI and removes controller roll.
+    static func cursorOrientation(normal: SIMD3<Float>, up: SIMD3<Float>) -> simd_quatf {
+        let z = simd_normalize(normal)
+        var y = up - z * simd_dot(up, z)
+        if simd_length_squared(y) < 0.000001 {
+            let fallback: SIMD3<Float> = abs(z.y) < 0.9 ? SIMD3(0, 1, 0) : SIMD3(1, 0, 0)
+            y = fallback - z * simd_dot(fallback, z)
+        }
+        y = simd_normalize(y)
+        return simd_quatf(simd_float3x3(columns: (simd_normalize(simd_cross(y, z)), y, z)))
+    }
+
     private func setLaser(_ n: (grip: SCNNode, aim: SCNNode, laser: SCNNode, dot: SCNNode), _ h: VR4Hand, _ ray: Float?) {
         n.aim.simdPosition = SIMD3(h.aim.px, h.aim.py, h.aim.pz); n.aim.simdOrientation = simd_quatf(ix: h.aim.qx, iy: h.aim.qy, iz: h.aim.qz, r: h.aim.qw)
-        if h.flags & UInt32(VR4_HAND_TRACKED) != 0 && ray == nil { n.aim.isHidden = true }   // hands: a laser only on the UI
-        let len = ray ?? 3, tracked = h.flags & UInt32(VR4_HAND_TRACKED) != 0
-        n.laser.scale = SCNVector3(1, CGFloat(len), 1)
-        n.laser.opacity = tracked ? 0.35 : 1   // hands: a faint ray, the cursor does the talking
+        let tracked = h.flags & UInt32(VR4_HAND_TRACKED) != 0
+        n.aim.isHidden = n.aim.isHidden || ray == nil
+        let len = ray ?? 0
+        // Follow the animated trigger's front surface; retain the original aim hit for targeting.
+        var start = tracked ? SIMD3<Float>.zero : n.grip.simdConvertPosition(SIMD3(0, 0.02, -0.04), to: n.aim)
+        if !tracked, let trigger = n.grip.childNode(withName: "trigger", recursively: true) {
+            let (lo, hi) = trigger.boundingBox
+            start = trigger.simdConvertPosition(SIMD3(Float(lo.x + hi.x) / 2, Float(lo.y + hi.y) / 2, Float(lo.z) - 0.006), to: n.aim)
+        }
+        let destination = SIMD3<Float>(0, 0, -max(0, len - 0.015))
+        let vector = destination - start, distance = simd_length(vector)
+        n.laser.simdPosition = start
+        if distance > 0.001 { n.laser.simdOrientation = simd_quatf(from: SIMD3(0, 1, 0), to: vector / distance) }
+        n.laser.simdScale = SIMD3(1, min(0.35, distance), 1)
+        n.laser.opacity = tracked ? 0.35 : 0.8
         n.dot.isHidden = n.aim.isHidden || ray == nil
         n.dot.simdPosition = n.aim.simdConvertPosition(SIMD3(0, 0, -len + 0.002), to: nil)
-        n.dot.simdOrientation = n.aim.simdOrientation   // faces back along the ray
-        n.dot.simdScale = SIMD3(repeating: max(0.5, len) * 0.02)   // constant angular size (~1.1 deg)
+        if let surface = pointerSurface(aim: h.aim, distance: len) {
+            n.dot.simdOrientation = Self.cursorOrientation(normal: surface.normal, up: surface.up)
+            n.dot.simdPosition = surface.position + surface.normal * 0.002
+        }
+        n.dot.simdScale = SIMD3(repeating: max(0.5, len) * 0.06)   // constant angular size (~3.4 deg)
         // pinch progress (Meta-style hand cursor): the ring closes in as thumb and index approach and fills on the pinch.
         // Controllers: the trigger's travel does the same.
         let p = tracked ? min(1, h.trigger / 0.5) : min(1, h.trigger / 0.55), pressed = tracked ? h.trigger >= 1 : h.trigger > 0.55
         n.dot.childNodes[0].simdScale = SIMD3(repeating: 1 - 0.35 * p)
         n.dot.childNodes[1].simdScale = SIMD3(repeating: pressed ? 0.62 : 0.22 + 0.12 * p)
-        n.dot.childNodes[1].opacity = pressed ? 1 : 0.85
+        n.dot.childNodes[1].opacity = pressed ? 0.3 : 0
+        let tint = pressed ? NSColor(red: 0.16, green: 0.45, blue: 1, alpha: 1) : NSColor.white
+        n.laser.geometry?.firstMaterial?.diffuse.contents = tint
+        for child in n.dot.childNodes { child.geometry?.firstMaterial?.multiply.contents = tint }
     }
     /// Pointer cursor: a white ring (with a dark rim for contrast on bright panels) around a dot; unit size, drawn on top.
     static func cursor() -> SCNNode {
@@ -1393,7 +1745,7 @@ final class Compositor {
         }
         guard let cb = cq.makeCommandBuffer() else { return nil }
         let target = ssColor ?? color
-        animate(); animateSpace(); animateTour()
+        animate(); animateSpace(); animateTour(); updateAvatar(t)
         animateTransitions(head: (SIMD3(t.eye.0.pose.px, t.eye.0.pose.py, t.eye.0.pose.pz) + SIMD3(t.eye.1.pose.px, t.eye.1.pose.py, t.eye.1.pose.pz)) / 2)
         for (i, e) in [t.eye.0, t.eye.1].enumerated() {
             eyes[i].simdPosition = SIMD3(e.pose.px, e.pose.py, e.pose.pz)

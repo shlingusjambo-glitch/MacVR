@@ -6,10 +6,19 @@ APP=build/VR4Mac.app
 mkdir -p $APP/Contents/MacOS $APP/Contents/Resources
 swiftc -O -parse-as-library -import-objc-header ../common/vr4mac.h Sources/*.swift -o $APP/Contents/MacOS/VR4Mac
 cp Info.plist $APP/Contents/
+# Record bundled runtime versions so a newer app cannot be shadowed by an older downloaded runtime.
+for component in WineXR SiliconXR; do
+    if [ "$component" = "WineXR" ]; then source=../runtime/vr4mac_openxr.c; else source=../SiliconXR/openxr/siliconxr_openxr.m; fi
+    if [ -f "$source" ]; then
+        runtime_version=$(sed -nE 's/.*runtimeVersion = XR_MAKE_VERSION\(([0-9]+), ([0-9]+), ([0-9]+)\).*/\1.\2.\3/p' "$source" | head -1)
+        if [ -n "$runtime_version" ]; then /usr/libexec/PlistBuddy -c "Set :MacVR${component}Version $runtime_version" "$APP/Contents/Info.plist"; fi
+    fi
+done
 rm -rf $APP/Contents/Resources/controllers; cp -R Resources/controllers $APP/Contents/Resources/   # real controller meshes (MIT)
 rm -rf $APP/Contents/Resources/environments; cp -R Resources/environments $APP/Contents/Resources/   # home panoramas (CC0)
 rm -rf $APP/Contents/Resources/sounds; cp -R Resources/sounds $APP/Contents/Resources/   # UI sounds (AOSP, Apache-2.0) + welcome-tour music
 rm -rf $APP/Contents/Resources/icons; cp -R Resources/icons $APP/Contents/Resources/   # UI icons (Lucide, ISC)
+rm -rf $APP/Contents/Resources/homes; cp -R Resources/homes $APP/Contents/Resources/
 rm -rf $APP/Contents/Resources/hands; cp -R Resources/hands $APP/Contents/Resources/   # hand mesh (freeHand.obj), rigged in Hands.swift
 if [ -f ../runtime/build/vr4mac_openxr.dll ]; then cp ../runtime/build/vr4mac_openxr.dll $APP/Contents/Resources/; fi
 for f in ../SiliconXR/build/libsiliconxr_openxr.dylib ../SiliconXR-Mod/build/siliconxr.jar; do if [ -f $f ]; then cp $f $APP/Contents/Resources/; fi; done   # SiliconXR: VR for native Mac games

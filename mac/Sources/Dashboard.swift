@@ -212,12 +212,12 @@ final class Dashboard {
     private var filter = 0                // library: index into `filters`
     private var sort = UserDefaults.standard.integer(forKey: "lib.sort")   // library: index into `sorts`
     private var menuFor: String?          // library tile whose "..." menu is open
+    private var settingsLanding = true
     private var section = "general"       // settings sidebar
     private var settingsSearch = false, settingsQuery = ""
     private var highlight: (key: String, since: CFTimeInterval)?   // a setting opened from search: flashes once
     private var reveal: String?           // settings row to scroll into view on the next draw
     private var step = 0                  // welcome tutorial page
-    private var tipIndex = Calendar.current.ordinality(of: .day, in: .era, for: Date()) ?? 0   // home: tip of the day
     private var lastDesktopUV: CGPoint?
     var grabbing: String?                 // grab bar held (Engine sets/clears), keeps it highlighted
     private var pressed: (String, CFTimeInterval)?, inPress = false, navved = false
@@ -453,6 +453,7 @@ final class Dashboard {
     func nav(_ id: String) {
         if id == "overview" && view != "overview" { overviewReturn = safeWorkspaceView(view) }
         if id == "commands" && view != "commands" { commandQuery = ""; commandPage = 0; commandKeyboard = false }
+        if id == "settings" && view != "settings" { settingsLanding = true }
         menuFor = nil
         if id == "power" { togglePower(); return }
         powerOpen = false
@@ -478,7 +479,7 @@ final class Dashboard {
     private func openSetting(_ key: String) {
         section = Dashboard.sectionKeys.first { $0.value.contains(key) }?.key ?? section
         settingsQuery = ""; settingsSearch = false; highlight = (key, CACurrentMediaTime()); reveal = key
-        nav("settings")
+        nav("settings"); settingsLanding = false
     }
 
     // MARK: power menu (dock power button, Quick Settings)
@@ -526,16 +527,9 @@ final class Dashboard {
     }
     /// Hover lift for cards and tiles: eases a little bigger with a soft shadow and a fading focus ring; a press sinks it.
     private func lifted(_ id: String, _ r: CGRect, _ rad: CGFloat, hot: Bool, ring: Bool = true, _ body: (CGRect) -> Void) {
-        let t = ease("lift:" + id, isPressed(id) ? -1 : hot ? 1 : 0)
-        let k = 1 + 0.035 * t, b = CGRect(x: r.midX - r.width * k / 2, y: r.midY - r.height * k / 2, width: r.width * k, height: r.height * k)
-        if t > 0.02 {
-            ctx.saveGState()
-            ctx.setShadow(offset: CGSize(width: 0, height: -12 * t), blur: 36 * t, color: CGColor(gray: 0, alpha: 0.6 * t))
-            ctx.setFillColor(col(0x1a242bff)); ctx.addPath(path(b.insetBy(dx: 3, dy: 3), rad)); ctx.fillPath()
-            ctx.restoreGState()
-        }
-        body(b)
-        if ring && t > 0.02 { outline(b.insetBy(dx: -5, dy: -5), rad + 5, 0xffffff00 | UInt32(min(1, t) * 225), 3) }
+        body(r)
+        if ring && hot { outline(r.insetBy(dx: 1.5, dy: 1.5), rad, 0xffffffd0, 3) }
+        if isPressed(id) { rr(r, rad, 0xffffff20) }
     }
 
     // MARK: drawing helpers
@@ -688,6 +682,10 @@ final class Dashboard {
         switch n {
         case "home": L(-17, -2, 0, -17, 17, -2); L(-12, -5, -12, 15, -4, 15, -4, 4, 4, 4, 4, 15, 12, 15, 12, -5)
         case "grid": for (x, y) in [(-14, -14), (2, -14), (-14, 2), (2, 2)] { ctx.addPath(path(CGRect(x: x, y: y, width: 12, height: 12), 3)); ctx.fillPath() }
+        case "library":
+            for x in [-10, 8] as [CGFloat] { for y in [-10, 8] as [CGFloat] {
+                ctx.addPath(path(CGRect(x: x - 6, y: y - 6, width: 12, height: 12), 3)); ctx.strokePath()
+            } }
         case "apps": for x in [-11, 0, 11] as [CGFloat] { for y in [-11, 0, 11] as [CGFloat] { D(x, y, 3.2) } }
         case "play": ctx.move(to: CGPoint(x: -9, y: -14)); ctx.addLine(to: CGPoint(x: 14, y: 0)); ctx.addLine(to: CGPoint(x: -9, y: 14)); ctx.closePath(); ctx.fillPath()
         case "gear": C(0, 0, 11); C(0, 0, 4); for a in 0..<8 { let s = sin(CGFloat(a) * .pi / 4), k = cos(CGFloat(a) * .pi / 4); L(s * 11, k * 11, s * 16, k * 16) }
@@ -698,6 +696,7 @@ final class Dashboard {
         case "next": L(-4, -12, 8, 0, -4, 12)
         case "search": C(-3, -3, 9); L(4, 4, 12, 12)
         case "usb": L(0, -16, 0, 16); L(0, -16, -4, -10); L(0, -16, 4, -10); L(0, 4, -8, -2, -8, -6); L(0, 8, 8, 2, 8, -2); C(0, 16, 3)
+        case "bolt": L(3, -16, -8, 2, 1, 2, -3, 16, 9, -3, 1, -3)
         case "wifi": C(0, 12, 20, -.pi * 0.75, -.pi * 0.25); C(0, 12, 12, -.pi * 0.75, -.pi * 0.25); D(0, 12, 3)
         case "sliders": for y in [-10, 0, 10] as [CGFloat] { L(-16, y, 16, y); C(y < 0 ? -6 : y > 0 ? 6 : 0, y, 4.5) }
         case "speaker": L(-14, -6, -6, -6, 2, -14, 2, 14, -6, 6, -14, 6, -14, -6); C(4, 0, 9, -.pi / 3, .pi / 3)
@@ -753,7 +752,7 @@ final class Dashboard {
         }
         rr(CGRect(x: r.minX, y: r.midY - 8, width: r.width, height: 16), 8, 0x4a5462ff)
         rr(CGRect(x: r.minX, y: r.midY - 8, width: 22 + CGFloat(value) * (r.width - 44), height: 16), 8, 0x2d8cffff)
-        let g = ease("knob:" + id, on ? 1 : 0, speed: 22) * 5
+        let g: CGFloat = 0
         let k = CGRect(x: r.minX + CGFloat(value) * (r.width - 44), y: r.midY - 22, width: 44, height: 44)
         rr(k.insetBy(dx: -g, dy: -g), 26, 0xffffffff)
     }
@@ -797,8 +796,6 @@ final class Dashboard {
 
     // MARK: app icons (flat colour tiles)
     private static let apps: [String: (icon: String, label: String, top: UInt32, bottom: UInt32)] = [
-        "overview": ("grid", "Workspace", 0x737ceaff, 0x424ca2ff),
-        "commands": ("search", "Search", 0x36bbaeff, 0x186879ff),
         "home": ("home", "Home", 0x538ff5ff, 0x2758baff),
         "spaces": ("home", "Spaces", 0x39aa98ff, 0x206b79ff),
         "playing": ("play", "Now Playing", 0x3aa0ffff, 0x1467e0ff),
@@ -809,12 +806,12 @@ final class Dashboard {
         "tips": ("tips", "Tips", 0x3ad1c6ff, 0x1a9a9aff),
         "theater": ("theater", "Theater", 0x4a4f63ff, 0x1c1e2aff),
         "appsettings": ("gear", "Game Details", 0x4fd18bff, 0x1f9d5cff),
-        "library": ("apps", "App Library", 0x6b7685ff, 0x4a5462ff),
+        "library": ("library", "App Library", 0x6b7685ff, 0x4a5462ff),
         "notifications": ("bell", "Notifications", 0xff6b8bff, 0xe0386aff),
     ]
     private func appIcon(_ id: String, _ r: CGRect, hot: Bool) {
         guard let a = Dashboard.apps[id] else { return }
-        let big = hot ? r.insetBy(dx: -5, dy: -5) : r
+        let big = r
         if id == "playing", let art = playingArt {   // Now Playing shows the game you're in
             cover(art, big, "", rad: big.width * 0.26); return
         }
@@ -885,14 +882,7 @@ final class Dashboard {
             icon("back", back.minX + 26, back.midY, 0xffffffff, 0.65)
             txt("Back", back.minX + 47, back.midY + 9, 26)
         }
-        let home = CGRect(x: bar.maxX - 330, y: bar.minY + 8, width: 120, height: 56)
-        if btn("win:home", home, { [unowned self] in nav("home") }) { rr(home, 16, 0xffffff1c) }
-        txt("Home", home.midX, home.midY + 10, 25, 0xd2d8dcff, align: 0.5)
-        let spaces = CGRect(x: bar.maxX - 200, y: bar.minY + 8, width: 120, height: 56)
-        if btn("win:spaces", spaces, { [unowned self] in nav("spaces") }) { rr(spaces, 16, 0xffffff1c) }
-        txt("Spaces", spaces.midX, spaces.midY + 10, 25, 0xd2d8dcff, align: 0.5)
         txt(title, bar.midX, bar.midY + 10, 27, 0xd2d8dcff, align: 0.5)
-        if !games.status.isEmpty { txt(games.status, back.maxX + 24, bar.midY + 10, 26, 0xa4adb4ff, maxW: bar.width / 2 - 380) }
         if view == "desktop" { desktopKeyboardButton(CGRect(x: bar.maxX - 70, y: bar.minY + 8, width: 56, height: 56)) }
         grabBar("grab", Dashboard.GRAB)
     }
@@ -901,7 +891,7 @@ final class Dashboard {
     private func grabBar(_ id: String, _ g: CGRect) {
         let hot = hover == id || grabbing == id
         regions.append(Region(id: id, r: g, fn: nil, drag: nil))
-        let gw = 190 + 50 * ease("grab:" + id, hot ? 1 : 0, speed: 20)
+        let gw: CGFloat = 190
         rr(CGRect(x: g.midX - gw / 2, y: g.midY - 8, width: gw, height: 16), 8, hot ? 0xffffffff : 0xffffffb0)
         if id == "grab" && view == "welcome" || quest && id != "grabkb" { return }   // Quest: the window's X is in its title bar
         let d = Dashboard.dotRect(g)
@@ -982,8 +972,18 @@ final class Dashboard {
         else { icon("person", st.minX + 42, st.midY, 0xffffffff, 0.8) }
         let tf = DateFormatter(); tf.timeStyle = .short
         txt(tf.string(from: Date()), st.minX + 88, st.midY + 11, 30)
-        icon(linkStatus == "USB" ? "usb" : "wifi", st.minX + 268, st.midY, 0xffffffff, 0.85)
-        if settings.bool("show_fps") { txt("\(fps)", st.maxX - 20, st.midY + 10, 26, 0x5ee07aff, align: 1) }
+        // Live headset charge and active transport fill the status end of this button.
+        let charge = CGRect(x: st.maxX - 107, y: st.midY - 12, width: 38, height: 24)
+        let batteryColor: UInt32 = headsetCharging ? 0x5ee07aff : headsetBattery >= 0 && headsetBattery <= 15 ? 0xff6868ff : 0xffffffff
+        outline(charge, 5, batteryColor, 2.5)
+        rr(CGRect(x: charge.maxX + 2, y: charge.midY - 5, width: 3, height: 10), 1.5, batteryColor)
+        if headsetBattery >= 0 {
+            let width = charge.width - 8
+            rr(CGRect(x: charge.minX + 4, y: charge.minY + 4, width: width * CGFloat(min(100, max(0, headsetBattery))) / 100, height: charge.height - 8), 2, batteryColor)
+        } else { txt("?", charge.midX, charge.midY + 7, 19, 0x9aa3afff, align: 0.5) }
+        if headsetCharging { icon("bolt", charge.midX, charge.midY, 0x15181dff, 0.55) }
+        icon(linkStatus == "USB" ? "usb" : "wifi", st.maxX - 27, st.midY,
+             streamInfo.isEmpty ? 0x68717dff : 0xffffffff, 0.85)
         indicator(st.minX + 120, view == "quick")
         if stHot { tip = (st, "Quick Settings") }
         // notifications
@@ -994,9 +994,9 @@ final class Dashboard {
         if unread > 0 && !quiet { rr(CGRect(x: bell.maxX - 22, y: bell.minY + 12, width: 14, height: 14), 7, 0x2d8cffff) }
         indicator(bell.midX, view == "notifications")
         // system destinations | apps | recent games | App Library
-        var items: [String] = gameActive ? ["home", "overview", "commands", "playing"] : ["home", "overview", "commands"]
-        items += settings.bool("show_desktop_tabs") ? ["desktop", "steam"] : ["steam"]
-        if settings.bool("show_settings_tab") { items.append("settings") }
+        // Keep the dock focused on the two places people need every session.
+        // The App Library contains the remaining destinations and settings.
+        let items: [String] = gameActive ? ["home", "playing"] : ["home"]
         let games = recents.prefix(2).compactMap { id in library.first { $0.appid == id } }
         let tile: CGFloat = 66, gap: CGFloat = 22
         let count = CGFloat(items.count + games.count + 1)
@@ -1010,7 +1010,7 @@ final class Dashboard {
             if h { tip = (r, label) }
             x += tile + gap
         }
-        let glyphs = ["desktop": "monitor", "settings": "gear", "library": "apps"]   // system controls: white glyphs
+        let glyphs = ["desktop": "monitor", "settings": "gear", "library": "library"]   // system controls: white glyphs
         for id in items {
             slot(id, Dashboard.apps[id]!.label, { [unowned self] r in
                 if let g = glyphs[id] { icon(g, r.midX, r.midY, 0xffffffff, 1.0) }
@@ -1025,7 +1025,7 @@ final class Dashboard {
                      active: gameActive && self.games.playing(gameName) == g)
             }
         }
-        slot("library", "App Library", { r in icon("apps", r.midX, r.midY, 0xffffffff, 1.0) }, { [unowned self] in nav("library") },
+        slot("library", "App Library", { r in icon("library", r.midX, r.midY, 0xffffffff, 1.0) }, { [unowned self] in nav("library") },
              active: view == "library" || view == "keyboard")
         if let (r, label) = tip {   // label above the hovered control
             let w = CGFloat(label.count) * 15 + 44, tt = CGRect(x: min(max(r.midX - w / 2, 20), CGFloat(Dashboard.W) - w - 20), y: d.minY - 58, width: w, height: 46)
@@ -1039,9 +1039,7 @@ final class Dashboard {
     /// Library and (Settings > Show Power Options) the power button. Tiles lift on hover; the name fades in above.
     /// Left-Handed Layout mirrors the whole bar.
     private func questDock() {
-        var items: [String] = gameActive ? ["home", "overview", "commands", "playing"] : ["home", "overview", "commands"]
-        items += settings.bool("show_desktop_tabs") ? ["desktop", "steam"] : ["steam"]
-        if settings.bool("show_settings_tab") { items.append("settings") }
+        let items: [String] = gameActive ? ["home", "playing"] : ["home"]
         let favs = recents.compactMap { id in library.first { $0.appid == id } }
         let power = settings.bool("show_power")
         let tile: CGFloat = 66, gap: CGFloat = 16, statusW: CGFloat = 330
@@ -1084,8 +1082,8 @@ final class Dashboard {
         func slot(_ id: String, _ label: String, _ draw: (CGRect) -> Void, _ fn: @escaping () -> Void, active: Bool) {
             let r0 = m(CGRect(x: x, y: d.midY - tile / 2 - 3, width: tile, height: tile))
             let h = btn("dock:" + id, r0.insetBy(dx: -gap / 2, dy: -8), fn)
-            let t = ease("dock:" + id, isPressed("dock:" + id) ? -1 : h ? 1 : 0, speed: 20), k = 1 + 0.08 * t
-            let r = CGRect(x: r0.midX - tile * k / 2, y: r0.midY - tile * k / 2 - 7 * max(0, t), width: tile * k, height: tile * k)
+            let t = ease("dock:" + id, isPressed("dock:" + id) ? -1 : h ? 1 : 0, speed: 20), k: CGFloat = 1
+            let r = CGRect(x: r0.midX - tile * k / 2, y: r0.midY - tile * k / 2, width: tile * k, height: tile * k)
             draw(r)
             if t > 0.02 { outline(r.insetBy(dx: -4, dy: -4), 21, 0xffffff00 | UInt32(192 * min(1, t)), 3) }
             if active { rr(CGRect(x: r0.midX - 12, y: d.maxY - 10, width: 24, height: 4), 2, 0xc8d0d6ff) }
@@ -1102,7 +1100,7 @@ final class Dashboard {
                  active: gameActive && self.games.playing(gameName) == g)
         }
         rr(m(CGRect(x: x + 2, y: d.minY + 24, width: 2, height: d.height - 48)), 1, 0xffffff2a); x += 22
-        slot("library", "App Library", { [unowned self] r in rr(r, 18, 0x46525dff); icon("apps", r.midX, r.midY, 0xffffffff, 0.85 * r.width / tile) },
+        slot("library", "App Library", { [unowned self] r in rr(r, 18, 0x46525dff); icon("library", r.midX, r.midY, 0xffffffff, 0.85 * r.width / tile) },
              { [unowned self] in nav("library") }, active: view == "library" || view == "keyboard")
         if power {
             x += 8
@@ -1135,18 +1133,6 @@ final class Dashboard {
         txt(label, r.minX + 68, r.midY + 10, 27, bold: true, maxW: r.width - 88)
         if hot { outline(r, min(18, r.height / 2), 0x8fbcffff, 2) }
     }
-    private static let tips: [(String, String)] = [
-        ("Swipe to scroll", "Flick a list with your finger or a pinch. It glides and slows down, like on your phone."),
-        ("Hold for options", "Touch and hold a game, or squeeze the grip on it, for Play, Pin and Details."),
-        ("Three windows", "Drag a window by the bar under it to put it beside the others."),
-        ("Pin your favourites", "Pin games to the dock from their ••• menu so they're always one tap away."),
-        ("Search everything", "Search in the App Library finds games, apps and settings."),
-        ("Theater", "Play flatscreen games on a giant curved screen. Find Theater in Quick Settings."),
-        ("Make it comfortable", "Text Size, High Contrast and Reduce Motion live in Settings > Accessibility."),
-        ("Recenter", "Hold the menu button to bring the menu back in front of you."),
-        ("Do Not Disturb", "Mute pop-ups from Quick Settings. Everything still lands in Notifications."),
-        ("Power menu", "The power button quits games, refreshes the video and recenters your view."),
-    ]
     /// The game Home offers to continue: the one running, else the last one played.
     private var continueGame: Game? {
         if let g = playingGame { return g }
@@ -1167,8 +1153,8 @@ final class Dashboard {
         txt(tf.string(from: date), c.maxX - 8, c.minY + 50, 46, bold: true, align: 1)
         icon(linkStatus == "USB" ? "usb" : "wifi", c.maxX - textW("\(headset.label) · \(linkStatus)", 26) - 34, c.minY + 79, 0xa4adb4ff, 0.6)
         txt("\(headset.label) · \(linkStatus)", c.maxX - 8, c.minY + 88, 26, 0xa4adb4ff, align: 1)
-        // hero: continue playing (art), or a welcome over your home environment
-        let hero = CGRect(x: c.minX, y: c.minY + 118, width: 1100, height: 330)
+        // One wide home card keeps the current game or library action in focus.
+        let hero = CGRect(x: c.minX, y: c.minY + 118, width: c.width, height: 330)
         if let g = continueGame {
             let hot = btn("home:hero", hero) { [unowned self] in if gameActive { close() } else { start(g) } }
             lifted("home:hero", hero, 26, hot: hot) { r in
@@ -1184,8 +1170,6 @@ final class Dashboard {
             homeAction("home:primary", gameActive ? "Resume" : "Play", "play", CGRect(x: hero.minX + 36, y: hero.maxY - 96, width: 220, height: 68), primary: true) { [unowned self] in
                 if gameActive { close() } else { start(g) }
             }
-            homeAction("home:details", "Details", "info", CGRect(x: hero.minX + 276, y: hero.maxY - 96, width: 220, height: 68)) { [unowned self] in showDetails(g) }
-            homeAction("home:spaces", "Change space", "mountain", CGRect(x: hero.minX + 516, y: hero.maxY - 96, width: 290, height: 68)) { [unowned self] in nav("spaces") }
         } else {
             cover(Dashboard.envThumb(settings["environment"]), hero, "", rad: 26)
             scrim(hero, 26, fromLeft: true, strength: 0.8)
@@ -1193,31 +1177,6 @@ final class Dashboard {
             txt(settings["environment"], hero.minX + 36, hero.minY + 116, 50, bold: true, maxW: hero.width - 72)
             txt("Settle in, find a game, or bring your Mac into VR.", hero.minX + 36, hero.minY + 160, 27, 0xd2d8dcff, maxW: hero.width - 72)
             homeAction("home:primary", "Explore library", "apps", CGRect(x: hero.minX + 36, y: hero.maxY - 96, width: 300, height: 68), primary: true) { [unowned self] in nav("library") }
-            homeAction("home:spaces", "Change space", "mountain", CGRect(x: hero.minX + 356, y: hero.maxY - 96, width: 290, height: 68)) { [unowned self] in nav("spaces") }
-        }
-        // right column: tip of the day / Steam news, then four quick actions
-        let x = hero.maxX + 24, w = c.maxX - x
-        let cards = Dashboard.tips.map { ("TIP", $0.0, $0.1) } + games.news.prefix(3).map { n in
-            ("NEWS · " + (library.first { $0.appid == n.appid }?.name ?? "Steam"), n.title, Dashboard.ago(n.date) + (n.label.isEmpty ? "" : "  ·  " + n.label)) }
-        let card = cards[((tipIndex % cards.count) + cards.count) % cards.count]
-        let tipR = CGRect(x: x, y: hero.minY, width: w, height: 178)
-        rr(tipR, 24, 0x34404aff)
-        icon(card.0 == "TIP" ? "tips" : "globe", tipR.minX + 40, tipR.minY + 38, 0x9cd7ffff, 0.75)
-        txt(card.0, tipR.minX + 70, tipR.minY + 48, 23, 0x9cd7ffff, bold: true, maxW: w - 170)
-        txt(card.1, tipR.minX + 28, tipR.minY + 90, 29, bold: true, maxW: w - 56)
-        para(card.2, tipR.minX + 28, tipR.minY + 128, 24, 0xd2d8dcff, maxW: w - 56, maxLines: 2)
-        let nextTip = CGRect(x: tipR.maxX - 120, y: tipR.minY + 12, width: 104, height: 52)
-        face(nextTip, 26, on: btn("home:tip", nextTip) { [unowned self] in tipIndex += 1; redraw() }, base: 0x00000000, hot: 0x46525dff)
-        txt("Next", nextTip.midX - 10, nextTip.midY + 9, 25, 0xd2d8dcff, align: 0.5); icon("next", nextTip.maxX - 22, nextTip.midY, 0xd2d8dcff, 0.5)
-        let qa: [(String, String, String, () -> Void)] = [
-            ("home:desktop", "Mac Desktop", "monitor", { [unowned self] in openDesktop() }),
-            ("home:quick", "Quick Settings", "sliders", { [unowned self] in nav("quick") }),
-            ("home:recenter", "Recenter", "recenter", { [unowned self] in recenter(); note("View centered", kind: "System") }),
-            ("home:library", "All Apps", "apps", { [unowned self] in nav("library") }),
-        ]
-        let qw = (w - 16) / 2
-        for (i, a) in qa.enumerated() {
-            homeAction(a.0, a.1, a.2, CGRect(x: x + CGFloat(i % 2) * (qw + 16), y: tipR.maxY + 16 + CGFloat(i / 2) * 72, width: qw, height: 64), a.3)
         }
         // recent games
         txt("Jump back in", c.minX + 8, c.minY + 500, 32, bold: true)
@@ -1293,7 +1252,7 @@ final class Dashboard {
         if let style = saved["style"] as? String, Settings.items["home_style"]!.options.contains(style) { settings.set("home_style", style) }
         navigationHistory = [[], [], []]
         sideViews = quest ? [views[0].isEmpty ? nil : safeWorkspaceView(views[0]), views[2].isEmpty ? nil : safeWorkspaceView(views[2])] : [nil, nil]
-        nav(safeWorkspaceView(views[1])); recenter(); note("Workspace restored")
+        nav(safeWorkspaceView(views[1])); note("Workspace restored")
     }
     private func toggleQuiet() { toggleSetting("dnd"); toastUntil = .distantPast; redraw() }
     private func drawOverview() {
@@ -1368,7 +1327,7 @@ final class Dashboard {
         }
         var actions: [(String, String, String, String, () -> Void)] = []
         if gameActive { actions.append(("resume", "Resume game", gameName, "play", { [unowned self] in close() })) }
-        for route in ["library", "home", "overview", "desktop", "spaces", "quick", "settings", "notifications"] {
+        for route in ["library", "home", "desktop", "spaces", "quick", "settings", "notifications"] {
             if route == "desktop" && !settings.bool("show_desktop_tabs") || route == "settings" && !settings.bool("show_settings_tab") { continue }
             let app = Dashboard.apps[route]!
             actions.append((route, app.label, "Open app", app.icon, { [unowned self] in nav(route) }))
@@ -1408,7 +1367,7 @@ final class Dashboard {
     // MARK: App Library
     // MARK: App Library: filters, sort, universal search (apps, settings, games), detail pages
     static let filters = ["All", "Installed", "VR", "Flat", "Pinned"], sorts = ["Recent", "A–Z", "Most Played"]
-    private static let systemApps = ["home", "overview", "commands", "spaces", "desktop", "steam", "theater", "settings", "quick", "notifications", "tips"]
+    private static let systemApps = ["home", "spaces", "desktop", "steam", "theater", "settings", "quick", "notifications", "tips"]
     /// The library as shown (pure, tested): `filter` and `sort` index `filters` / `sorts`. A search keeps names containing
     /// the query (accents and case ignored) and ranks names that start with it, or have a word that does, first.
     static func arrange(_ lib: [Game], query: String, filter: Int, sort: Int, pinned: Set<String>,
@@ -1430,13 +1389,13 @@ final class Dashboard {
     }
     private func drawLibrary() {
         let c = content
-        segmented("filter", CGRect(x: c.minX, y: c.minY - 4, width: 650, height: 64), Dashboard.filters, filter) { [unowned self] i in filter = i; flicks["library"] = nil }
-        let s = CGRect(x: c.minX + 670, y: c.minY - 4, width: 640, height: 64)
+        segmented("filter", CGRect(x: c.minX, y: c.minY - 4, width: 500, height: 64), ["All", "Installed", "Pinned"], [0, 1, 4].firstIndex(of: filter) ?? 0) { [unowned self] i in filter = [0, 1, 4][i]; flicks["library"] = nil }
+        let s = CGRect(x: c.minX + 520, y: c.minY - 4, width: c.width - 810, height: 64)
         let searching = view == "keyboard"
         face(s, 32, on: btn("search", s) { [unowned self] in view = "keyboard"; sounds.play("open"); redraw() }, base: searching ? 0x3c4654ff : 0x303945ff)
         if searching { outline(s.insetBy(dx: 1.5, dy: 1.5), 32, 0x2d8cffff, 3) }
         icon("search", s.minX + 40, s.midY, 0x9aa3afff, 1.0)
-        txt(query.isEmpty ? "Search games, apps and settings" : query + (searching ? "▏" : ""), s.minX + 76, s.midY + 10, 28, query.isEmpty ? 0x9aa3afff : 0xffffffff, maxW: 500)
+        txt(query.isEmpty ? "Search games" : query + (searching ? "▏" : ""), s.minX + 76, s.midY + 10, 28, query.isEmpty ? 0x9aa3afff : 0xffffffff, maxW: 500)
         if !query.isEmpty {
             let x = CGRect(x: s.maxX - 62, y: s.minY + 6, width: 52, height: 52)
             face(x, 26, on: btn("clearq", x) { [unowned self] in query = ""; flicks["library"] = nil; sounds.play("back"); redraw() }, base: 0x00000000)
@@ -1447,7 +1406,7 @@ final class Dashboard {
             sort = (sort + 1) % Dashboard.sorts.count; UserDefaults.standard.set(sort, forKey: "lib.sort"); flicks["library"] = nil; redraw()
         }, base: 0x303945ff)
         icon("sort", so.minX + 36, so.midY, 0xc9cfd8ff, 0.8)
-        txt(Dashboard.sorts[sort], so.minX + 66, so.midY + 10, 27, bold: true, maxW: so.width - 110)
+        txt(["Recent", "A–Z", "Played"][sort], so.minX + 66, so.midY + 10, 27, bold: true, maxW: so.width - 110)
         icon("chevron", so.maxX - 32, so.midY, 0xc9cfd8ff, 0.6)
         let rf = CGRect(x: c.maxX - 64, y: c.minY - 4, width: 64, height: 64)
         face(rf, 32, on: btn("rescan", rf) { [unowned self] in games.scan(); note("Library refreshed", kind: "Games") })
@@ -1457,8 +1416,7 @@ final class Dashboard {
         let lib = Dashboard.arrange(library, query: query, filter: filter, sort: sort, pinned: pinnedSet, last: { id in
             let t = Dashboard.lastPlayed(id); return t > 0 ? t : launched.firstIndex(of: id).map { Double(100 - $0) } ?? 0
         }, played: Dashboard.playTime)
-        let apps = filter != 0 ? [] : Dashboard.systemApps.filter { query.isEmpty || Dashboard.apps[$0]!.label.localizedCaseInsensitiveContains(query) }
-        let setKeys = query.trimmingCharacters(in: .whitespaces).isEmpty ? [] : Array(Dashboard.settingsMatching(query).prefix(5))
+        let setKeys: [String] = []
         let area = CGRect(x: c.minX, y: c.minY + 80, width: c.width, height: c.height - 80 - 74)
         let off = flicks["library"]?.pos ?? 0
         let cols = 4, gap: CGFloat = 36, pad: CGFloat = 18, tw = (area.width - 20 - 2 * pad - CGFloat(cols - 1) * gap) / CGFloat(cols), th = tw * 0.467, rowH = th + 104
@@ -1466,21 +1424,6 @@ final class Dashboard {
         var menuTile: (CGRect, Game)?
         func live(_ r: CGRect) -> CGRect? { let v = r.intersection(area); return v.height > 40 ? v : nil }   // hit area while scrolled into view
         clipped(area.insetBy(dx: -8, dy: -8)) {
-            if !apps.isEmpty {   // built-in apps: one row of small tiles
-                caption("Apps", area.minX + pad, y + 30); y += 46
-                let aw = (area.width - 20 - 2 * pad - 8 * 14) / 9
-                for (i, id) in apps.enumerated() {
-                    let a = Dashboard.apps[id]!, cell = CGRect(x: area.minX + pad + CGFloat(i) * (aw + 14), y: y, width: aw, height: 150)
-                    let r = CGRect(x: cell.midX - 52, y: cell.minY + 6, width: 104, height: 104)
-                    let h = live(cell).map { btn("sys:" + id, $0) { [unowned self] in openApp(id) } } ?? false
-                    lifted("sys:" + id, r, 28, hot: h) { [unowned self] b in
-                        grad(b, 28, a.top, a.bottom)
-                        if id == "steam", let logo = games.steamIcon { cover(logo, b.insetBy(dx: 18, dy: 18), "", rad: 34) } else { icon(a.icon, b.midX, b.midY, 0xffffffff, 1.2 * b.width / 104) }
-                    }
-                    txt(a.label, cell.midX, cell.maxY + 10, 24, h ? 0xffffffff : 0xdfe3e8ff, align: 0.5, maxW: aw + 10)
-                }
-                y += 186
-            }
             if !setKeys.isEmpty {   // matching settings: chips that jump straight to them
                 caption("Settings", area.minX + pad, y + 30); y += 46
                 var x = area.minX + pad
@@ -1498,7 +1441,7 @@ final class Dashboard {
                 y += 96
             }
             if !lib.isEmpty || filter != 0 {
-                caption("Games  ·  \(lib.count)", area.minX + pad, y + 30); y += 52
+                y += 12
             }
             for (i, g) in lib.enumerated() {
                 let r = CGRect(x: area.minX + pad + CGFloat(i % cols) * (tw + gap), y: y + CGFloat(i / cols) * rowH, width: tw, height: th)
@@ -1524,21 +1467,20 @@ final class Dashboard {
                     }
                 }
                 if isPressed("tile:" + g.appid) || touchPending?.0.id == "tile:" + g.appid { longPressRing(r) }
-                // "..." hit area sits on top of the tile (registered after it)
+                // Explicit overflow button for per-game actions.
                 if r.intersection(area).height > 60 {
                     let more = CGRect(x: r.maxX - 64, y: r.minY + 10, width: 54, height: 42)
                     btn("more:" + g.appid, more.intersection(area)) { [unowned self] in menuFor = menuFor == g.appid ? nil : g.appid; redraw() }
                 }
                 if menuFor == g.appid { menuTile = (r, g) }
                 txt(g.name, r.minX + 4, r.maxY + 40, 27, h ? 0xffffffff : 0xdfe3e8ff, bold: h, maxW: tw - 8)
-                let last = Dashboard.lastPlayed(g.appid), played = Dashboard.playTime(g.appid)
-                let meta = g.progress != nil ? "Downloading" : !g.installed ? "Not installed" :
-                    [g.vr ? "VR" : "Flat", played > 0 ? Dashboard.duration(played) : last > 0 ? Dashboard.ago(Date(timeIntervalSince1970: last)) : "Ready to play"].joined(separator: "  ·  ")
-                txt(meta, r.minX + 4, r.maxY + 74, 23, 0xa4adb4ff, maxW: tw - 8)
+                if g.progress != nil || !g.installed {
+                    txt(g.progress != nil ? "Downloading" : "Not installed", r.minX + 4, r.maxY + 74, 23, 0xa4adb4ff, maxW: tw - 8)
+                }
             }
             y += CGFloat((lib.count + cols - 1) / cols) * rowH
         }
-        if lib.isEmpty && apps.isEmpty && setKeys.isEmpty {
+        if lib.isEmpty && setKeys.isEmpty {
             icon("search", area.midX, area.midY - 70, 0x5d6a75ff, 2.4)
             txt(query.isEmpty ? (filter == 4 ? "Pin games from their ••• menu to see them here." : "No games here yet. Sign in to Steam, then refresh.")
                 : "Nothing matches \"\(query)\"", area.midX, area.midY + 30, 30, 0xa4adb4ff, align: 0.5)
@@ -1547,7 +1489,7 @@ final class Dashboard {
         flicks["library", default: Flick()].limit = maxOff
         // bottom bar: hint + page buttons (touch-friendly paging without a thumbstick)
         let pageY = c.maxY - 64
-        txt("Swipe or use the thumbstick to browse  ·  Hold a game for options", c.minX + 8, pageY + 40, 24, 0xa4adb4ff)
+        txt("", c.minX + 8, pageY + 40, 24, 0xa4adb4ff)
         if off > 1 {
             homeAction("lib:previous", "Previous", "back", CGRect(x: c.maxX - 470, y: pageY, width: 220, height: 60)) { [unowned self] in pageLibrary(-area.height) }
         }
@@ -1714,33 +1656,15 @@ final class Dashboard {
     }
     private func toggleSetting(_ k: String) { settings.set(k, settings.bool(k) ? "Off" : "On"); sounds.play(settings.bool(k) ? "on" : "off") }
 
-    /// Quest Quick Settings (Horizon OS): big clock and live status on top, pill sliders, toggle tiles, Mac Desktop and
-    /// Environment cards, then workspaces.
+    /// Compact Quest Quick Settings: connection summary, two comfort sliders and the handful of session controls used often.
     private func drawQuickQuest() {
         let c = content, date = Date()
         let tf = DateFormatter(); tf.dateFormat = "h:mm"
-        let ap = DateFormatter(); ap.dateFormat = "a"
         let time = tf.string(from: date)
         txt(time, c.minX, c.minY + 50, 58, bold: true)
-        txt(ap.string(from: date), c.minX + textW(time, 58, bold: true) + 10, c.minY + 50, 26, 0xa4adb4ff)
-        let df = DateFormatter(); df.dateFormat = "EEEE, MMMM d"
-        txt(df.string(from: date), c.minX + 2, c.minY + 92, 26, 0xa4adb4ff)
-        // status chips: link, stream, headset, fps
-        var x = c.minX + 330
-        let right = c.maxX - (gameActive ? 560 : 330)
-        func chip(_ ic: String, _ s: String, _ tint: UInt32 = 0xe0e5e8ff) {
-            let w = textW(s, 25) + 82
-            guard x + w <= right else { return }
-            let r = CGRect(x: x, y: c.minY + 4, width: w, height: 54)
-            rr(r, 27, 0x34404aff); icon(ic, r.minX + 34, r.midY, tint, 0.62); txt(s, r.minX + 60, r.midY + 9, 25, 0xe0e5e8ff)
-            x = r.maxX + 12
-        }
-        chip(linkStatus == "USB" ? "usb" : "wifi", linkStatus == "USB" ? "USB connected" : "Wi-Fi")
-        chip("headset", headset.label)
-        if streamInfo.isEmpty { chip("gauge", "Not streaming", 0xa4adb4ff) } else { chip("gauge", "\(mbps) Mbps") }
-        if fps > 0 { chip("gauge", "\(fps) fps", 0x5ee07aff) }
-        if !streamInfo.isEmpty { txt(streamInfo, c.minX + 332, c.minY + 92, 24, 0xa4adb4ff) }
-        // right: Resume (game running), power, settings
+        let statusText = [headset.label, linkStatus, fps > 0 ? "\(fps) fps" : nil].compactMap { $0 }.joined(separator: "  ·  ")
+        txt(statusText, c.minX + 2, c.minY + 88, 26, 0xa4adb4ff)
+        // Session actions stay together in the header.
         let gear = CGRect(x: c.maxX - 200, y: c.minY + 2, width: 200, height: 60)
         face(gear, 30, on: btn("q:all", gear) { [unowned self] in nav("settings") }, base: 0x34404aff, hot: 0x46525dff)
         icon("gear", gear.minX + 38, gear.midY, 0xffffffff, 0.9); txt("Settings", gear.minX + 70, gear.midY + 10, 27, bold: true)
@@ -1768,31 +1692,22 @@ final class Dashboard {
             if hot { txt("\(Int((value * 100).rounded()))%", r.maxX - 30, r.midY + 10, 27, value > 0.9 ? 0xffffffff : 0xe0e5e8ff, bold: true, align: 1) }
         }
         let sw = (c.width - 24) / 2
-        pill("q:vol", CGRect(x: c.minX, y: c.minY + 122, width: sw, height: 66), Float(sounds.streamVolume) / 100, "speaker") { [unowned self] v in sounds.streamVolume = Int(v * 100) }
-        pill("q:bright", CGRect(x: c.minX + sw + 24, y: c.minY + 122, width: sw, height: 66), Float(sounds.brightness - 20) / 80, "sun") { [unowned self] v in sounds.brightness = 20 + Int(v * 80) }
-        // toggle tiles: icon top-left, name and state bottom-left; on = blue
-        let bitrates = Settings.items["bitrate"]!.options, sizes = Settings.items["text_size"]!.options
+        txt("Volume", c.minX + 4, c.minY + 140, 23, 0xa4adb4ff, bold: true)
+        txt("Brightness", c.minX + sw + 28, c.minY + 140, 23, 0xa4adb4ff, bold: true)
+        pill("q:vol", CGRect(x: c.minX, y: c.minY + 160, width: sw, height: 60), Float(sounds.streamVolume) / 100, "speaker") { [unowned self] v in sounds.streamVolume = Int(v * 100) }
+        pill("q:bright", CGRect(x: c.minX + sw + 24, y: c.minY + 160, width: sw, height: 60), Float(sounds.brightness - 20) / 80, "sun") { [unowned self] v in sounds.brightness = 20 + Int(v * 80) }
+        // Six direct toggles; infrequent controls live in Settings or the Library.
         let tiles: [(String, String, String, String, Bool, () -> Void)] = [
-            ("q:recenter", "recenter", "Recenter", "Face forward", false, { [unowned self] in recenter(); note("View recentered", kind: "System") }),
             ("q:theater", "theater", "Theater", theaterOn ? "On" : "Off", theaterOn, { [unowned self] in theater(!theaterOn) }),
             ("q:touch", "hand", "Direct Touch", settings.bool("direct_touch") ? "On" : "Off", settings.bool("direct_touch"), { [unowned self] in toggleSetting("direct_touch") }),
             ("q:mic", "mic", "Headset Mic", Mic.shared.useHeadset ? "On" : "Off", Mic.shared.useHeadset, { [unowned self] in toggleMic() }),
             ("q:dnd", "moon", "Do Not Disturb", settings.bool("dnd") ? "On" : "Off", settings.bool("dnd"), { [unowned self] in toggleSetting("dnd") }),
-            ("q:bitrate", "gauge", "Stream Quality", settings["bitrate"] == "Auto" ? "Auto · \(mbps) Mbps" : "\(mbps) Mbps", false, { [unowned self] in
-                let i = bitrates.firstIndex(of: settings["bitrate"]) ?? 0; settings.set("bitrate", bitrates[(i + 1) % bitrates.count]); sounds.play("on") }),
-            ("q:style", "apps", "Menu Style", settings["menu_style"], false, { [unowned self] in settings.cycle("menu_style"); sounds.play("on") }),
-            ("q:text", "text", "Text Size", settings["text_size"], settings["text_size"] != "Default", { [unowned self] in
-                let i = sizes.firstIndex(of: settings["text_size"]) ?? 0; settings.set("text_size", sizes[(i + 1) % sizes.count]); sounds.play("on") }),
-            ("q:notes", "bell", "Notifications", unread > 0 ? "\(unread) new" : notices.isEmpty ? "None" : "\(notices.count)", false, { [unowned self] in nav("notifications") }),
-            gameActive ? ("q:quit", "power", "Quit Game", gameName.isEmpty ? "Running" : gameName, false, { [unowned self] in power() })
-                : ("q:hands", "hand", "Hand Tracking", "How to", false, { [unowned self] in
-                    note("Put your controllers down: pinch to click, pinch and drag to scroll, left palm pinch opens the menu", 6, kind: "System") }),
-            ("q:shot", "camera", "Screenshot", "To Pictures", false, { [unowned self] in screenshot() }),
             ("q:macwin", "monitor", "Mac Windows", "Bring into VR", false, { [unowned self] in openMacWindows() }),
+            ("q:shot", "camera", "Screenshot", "To Pictures", false, { [unowned self] in screenshot() }),
         ]
-        let tw = (c.width - 5 * 16) / 6
+        let tw = (c.width - CGFloat(tiles.count - 1) * 20) / CGFloat(tiles.count)
         for (i, (id, ic, label, sub, on, fn)) in tiles.enumerated() {
-            let r = CGRect(x: c.minX + CGFloat(i % 6) * (tw + 16), y: c.minY + 212 + CGFloat(i / 6) * 140, width: tw, height: 126)
+            let r = CGRect(x: c.minX + CGFloat(i) * (tw + 20), y: c.minY + 270, width: tw, height: 126)
             let h = btn(id, r) { [unowned self] in fn(); redraw() }
             lifted(id, r, 26, hot: h, ring: false) { b in
                 rr(b, 26, on ? (h ? 0x4a88f7ff : 0x2a73f5ff) : h ? 0x56636fff : 0x46525dff)
@@ -1801,29 +1716,6 @@ final class Dashboard {
                 txt(label, b.minX + 22, b.maxY - 40, 27, bold: true, maxW: b.width - 34)
                 txt(sub, b.minX + 22, b.maxY - 12, 23, on ? 0xe6efffff : 0xc0c8ceff, maxW: b.width - 34)
             }
-        }
-        // cards: Mac Desktop and Environment (with a peek of your home)
-        let cw = (c.width - 16) / 2
-        for (i, id) in ["q:desktop", "q:env"].enumerated() {
-            let r = CGRect(x: c.minX + CGFloat(i) * (cw + 16), y: c.minY + 504, width: cw, height: 140)
-            let h = btn(id, r) { [unowned self] in if id == "q:env" { nav("spaces") } else { openDesktop() }; redraw() }
-            lifted(id, r, 28, hot: h, ring: false) { [unowned self] b in
-                if id == "q:env" { cover(Dashboard.envThumb(settings["environment"]), b, "", rad: 28); scrim(b, 28, fromLeft: true, strength: 0.9) }
-                else { rr(b, 28, h ? 0x56636fff : 0x46525dff) }
-                icon(id == "q:env" ? "mountain" : "monitor", b.minX + 50, b.midY, 0xffffffff, 1.1)
-                txt(id == "q:env" ? "Environment" : "Mac Desktop", b.minX + 100, b.midY - 4, 34, bold: true, maxW: b.width - 140)
-                txt(id == "q:env" ? settings["environment"] + "  ·  " + settings["home_style"] : desktopStreaming ? "Streaming your Mac" : "See and use your Mac",
-                    b.minX + 100, b.midY + 36, 25, 0xd2d8dcff, maxW: b.width - 140)
-                icon("next", b.maxX - 40, b.midY, 0xd2d8dcff, 0.7)
-            }
-        }
-        if quest && drawingSlot == 1 {
-            caption("Workspaces", c.minX, c.minY + 704)
-            let bw = (c.width - 260 - 3 * 20) / 4   // Play, Focus, Explore, then the full Workspace overview
-            for (i, name) in ["Play", "Focus", "Explore"].enumerated() {
-                homeAction("workspace:" + name, name, ["play", "monitor", "home"][i], CGRect(x: c.minX + 260 + CGFloat(i) * (bw + 20), y: c.minY + 664, width: bw, height: 64)) { [unowned self] in workspace(name) }
-            }
-            homeAction("q:windows", "All windows", "grid", CGRect(x: c.maxX - bw, y: c.minY + 664, width: bw, height: 64)) { [unowned self] in nav("overview") }
         }
     }
 
@@ -1838,7 +1730,7 @@ final class Dashboard {
         case "Explore": view = "spaces"; sideViews = ["home", "library"]
         default: view = gameActive ? "playing" : "home"
         }
-        recenter(); sounds.play("open"); redraw()
+        sounds.play("open"); redraw()
     }
 
     // MARK: power menu: a sheet over the window
@@ -1893,10 +1785,12 @@ final class Dashboard {
     private static let sections: [(id: String, icon: String, label: String)] = [
         ("general", "gear", "General"), ("video", "monitor", "Display & Video"), ("controllers", "controller", "Controllers"),
         ("audio", "speaker", "Audio"), ("environment", "mountain", "Environment"), ("menu", "apps", "Universal Menu"),
-        ("accessibility", "access", "Accessibility"), ("about", "info", "About"),
+        ("accessibility", "access", "Accessibility"), ("updates", "download", "Updates"), ("experimental", "controller", "Experimental"), ("about", "info", "About"),
     ]
     private static let sectionKeys: [String: [String]] = [
         "general": ["render_scale", "refresh_rate"], "video": ["bitrate", "codec", "show_fps", "perf_hud", "theater_screen", "theater_curved", "theater_lights"],
+        "experimental": ["show_arms", "avatar_skin", "show_body", "home_mirror"],
+        "updates": ["auto_updates"],
         "controllers": ["controller_model", "system_button"], "environment": ["home_style", "floor_grid"],
         "menu": ["menu_style", "direct_touch", "dashboard_position", "ui_curved", "dnd", "show_desktop_tabs", "show_settings_tab", "show_power"],
         "accessibility": ["text_size", "high_contrast", "reduce_motion", "left_handed"],
@@ -1911,9 +1805,30 @@ final class Dashboard {
         let named = all.filter { hit(Settings.items[$0.key]?.label ?? "") }.map(\.key)
         return named + all.filter { !named.contains($0.key) && (hit(Settings.items[$0.key]?.info ?? "") || hit($0.section)) }.map(\.key)
     }
+    private func drawSettingsGrid() {
+        let c = content
+        let search = CGRect(x: c.midX - c.width * 0.28, y: c.minY, width: c.width * 0.56, height: 64)
+        face(search, 32, on: btn("set:search", search) { [unowned self] in settingsSearch = true; redraw() }, base: 0x34404aff)
+        icon("search", search.minX + 38, search.midY, 0xa4adb4ff, 0.8)
+        txt("Search settings", search.minX + 76, search.midY + 9, 27, 0xa4adb4ff)
+        let descriptions = ["experimental": "Arm visibility and new features","general": "Resolution and refresh rate", "video": "Quality, codec and theater", "controllers": "Controllers and input", "audio": "Volume, sound and microphone", "environment": "Home and architecture", "menu": "Touch and window layout", "accessibility": "Text, contrast and motion", "updates": "MacVR, WineXR and SiliconXR", "about": "Version and help"]
+        let cols = 4, gap: CGFloat = 24, width = (c.width - 3 * gap) / 4
+        for (i, category) in Dashboard.sections.enumerated() {
+            let r = CGRect(x: c.minX + CGFloat(i % cols) * (width + gap), y: c.minY + 98 + CGFloat(i / cols) * 186, width: width, height: 162)
+            let h = btn("sec:" + category.id, r) { [unowned self] in section = category.id; settingsLanding = false; flicks["settings"] = nil; redraw() }
+            rr(r, 24, h ? 0x56636fff : 0x34404aff)
+            icon(category.icon, r.minX + 42, r.minY + 40, 0xffffffff, 0.95)
+            txt(category.label, r.minX + 24, r.minY + 104, 31, bold: true, maxW: width - 48)
+            txt(descriptions[category.id] ?? "", r.minX + 24, r.minY + 142, 23, 0xa4adb4ff, maxW: width - 48)
+        }
+    }
+
     private func drawSettings() {
+        if settingsLanding && settingsQuery.isEmpty { drawSettingsGrid(); return }
         let w = Dashboard.WIN
         let side = CGRect(x: w.minX + 24, y: content.minY, width: 440, height: content.height - 4)
+        let categories = CGRect(x: side.minX, y: side.minY + 84, width: side.width, height: 58)
+        homeAction("set:categories", "All categories", "back", categories) { [unowned self] in settingsLanding = true; settingsQuery = ""; settingsSearch = false; redraw() }
         // search field (types on the pop-up keyboard)
         let sf = CGRect(x: side.minX, y: side.minY, width: side.width, height: 64)
         face(sf, 32, on: btn("set:search", sf) { [unowned self] in settingsSearch = true; sounds.play("open"); redraw() }, base: settingsSearch ? 0x3c4654ff : 0x303945ff)
@@ -1926,10 +1841,10 @@ final class Dashboard {
             icon("x", x.midX, x.midY, 0xffffffff, 0.7)
         }
         for (i, s) in Dashboard.sections.enumerated() {
-            let r = CGRect(x: side.minX, y: side.minY + 84 + CGFloat(i) * 80, width: side.width, height: 70)
+            let r = CGRect(x: side.minX, y: side.minY + 156 + CGFloat(i) * 64, width: side.width, height: 58)
             let sel = section == s.id && settingsQuery.isEmpty
             let h = btn("sec:" + s.id, r) { [unowned self] in
-                if section != s.id || !settingsQuery.isEmpty { section = s.id; settingsQuery = ""; settingsSearch = false; flicks["settings"] = nil; sounds.play("tap") }; redraw()
+                settingsLanding = false; if section != s.id || !settingsQuery.isEmpty { section = s.id; settingsQuery = ""; settingsSearch = false; flicks["settings"] = nil; sounds.play("tap") }; redraw()
             }
             if sel || h { rr(r, 20, sel ? (quest ? 0x2d8cffff : 0x3c4755ff) : 0x323b47ff) }
             icon(s.icon, r.minX + 44, r.midY, sel ? 0xffffffff : 0xc9cfd8ff, 1.0)
@@ -1951,6 +1866,13 @@ final class Dashboard {
             if results?.isEmpty == true { txt("No settings match. Try another word.", body.minX + 10, y + 40, 28, 0xa4adb4ff) }
             guard results == nil else { return }
             switch section {
+            case "updates":
+                txt(Updates.shared.status, body.minX + 16, y + 42, 27, 0xa4adb4ff, maxW: body.width - 32)
+                homeAction("updates:check", "Check for updates", "refresh", CGRect(x: body.minX, y: y + 76, width: 400, height: 70)) { Updates.shared.check(force: true) }
+                if !settings.bool("auto_updates") {
+                    homeAction("updates:install", "Install available updates", "download", CGRect(x: body.minX + 430, y: y + 76, width: 460, height: 70)) { Updates.shared.check(force: true, apply: true) }
+                }
+                y += 180
             case "controllers":   // the hand picked in the welcome tour
                 let r = CGRect(x: body.minX, y: y, width: body.width - 24, height: 104)
                 rr(r, 22, 0x2c343fff)
@@ -2022,6 +1944,7 @@ final class Dashboard {
                 txt("Replay Welcome Tour", t.midX, t.midY + 10, 29, bold: true, align: 0.5); y += 130
                 txt("Runtime log: /tmp/vr4mac/runtime.log", body.minX + 10, y + 30, 26, 0x9aa3afff)
                 txt("MacVR log: ~/Library/Application Support/VR4Mac/macvr.log", body.minX + 10, y + 70, 26, 0x9aa3afff); y += 100
+                txt("3D homes: fangzhangmnm · https://sketchfab.com/fangzhangmnm", body.minX + 10, y + 30, 26, 0x9aa3afff, maxW: body.width); y += 60
                 txt("Environments: Poly Haven (CC0) · Controller models: WebXR Input Profiles (MIT)", body.minX + 10, y + 30, 26, 0x9aa3afff, maxW: body.width); y += 60
             default: break
             }
@@ -2616,7 +2539,6 @@ final class Dashboard {
             transition { drawView() }
             if powerOpen && view != "welcome" { drawPower() } else { eased["1/power"] = nil }
         }
-        if windowOpen && !quest && !games.status.isEmpty { txt(games.status, Dashboard.WIN.minX + 40, Dashboard.WIN.minY + 60, 26, 0x9aa3afff, maxW: 700) }
         if view != "welcome" { if quest { questDock() } else { dock() } }   // no Universal Menu during the first-run tour
         if keyboardOpen {
             keyboardPanel(target: view == "desktop" || macKeyboard ? "desktop" : view == "welcome" ? "name" : view == "settings" ? "settings" : "search")

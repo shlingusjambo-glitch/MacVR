@@ -16,6 +16,16 @@ enum ControllerGLB {
         return root.clone()
     }
 
+    static func home(_ name: String) -> SCNNode? {
+        let key = "homes/" + name
+        if let cached = cache[key] { return cached.clone() }
+        guard let url = Bundle.main.resourceURL?.appendingPathComponent(key + ".glb"),
+              let data = try? Data(contentsOf: url), let root = try? Loader(data).load() else { return nil }
+        root.enumerateChildNodes { node, _ in
+            node.geometry?.materials.forEach { $0.lightingModel = .constant }
+        }
+        cache[key] = root; return root.clone()
+    }
     private enum Invalid: Error { case asset }
     private final class Loader {
         let json: [String: Any]

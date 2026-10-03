@@ -9,7 +9,7 @@ enum SiliconXR {
     static func install() { installOpenXR(); installVivecraft() }
 
     static func installOpenXR() {
-        guard let lib = Bundle.main.url(forResource: "libsiliconxr_openxr", withExtension: "dylib") else { return }
+        guard let lib = Updates.resource("libsiliconxr_openxr", extension: "dylib", component: "SiliconXR") else { return }
         let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/openxr/1")
         let file = dir.appendingPathComponent("active_runtime.json")
         if let old = try? String(contentsOf: file, encoding: .utf8), !old.contains("SiliconXR") { return }   // respect another runtime
@@ -23,7 +23,7 @@ enum SiliconXR {
     }
 
     static func installVivecraft() {
-        guard let jar = Bundle.main.url(forResource: "siliconxr", withExtension: "jar"), let data = try? Data(contentsOf: jar) else { return }
+        guard let jar = Updates.resource("siliconxr", extension: "jar", component: "SiliconXR"), let data = try? Data(contentsOf: jar) else { return }
         let fm = FileManager.default, home = fm.homeDirectoryForCurrentUser
         let support = home.appendingPathComponent("Library/Application Support")
         var dirs = [support.appendingPathComponent("minecraft/mods")]

@@ -15,12 +15,18 @@ final class Settings: ObservableObject {
     struct Item { let key, label: String; let options: [String]; let def: String; var advanced = false; var info = "" }
     static let offOn = ["Off", "On"]
     static let schema: [(String, [Item])] = [
+        ("Experimental", [
+            Item(key: "avatar_skin", label: "Skin tone", options: ["Original", "Light", "Medium", "Tan", "Brown", "Deep"], def: "Original", info: "Appearance of your hands, arms and experimental body."),
+            Item(key: "show_body", label: "Show body", options: offOn, def: "Off", info: "Extend the arm shoulder mesh into a torso. No head or legs."),
+            Item(key: "home_mirror", label: "Home mirror", options: offOn, def: "Off", info: "A mirror in your home showing your avatar."),
+            Item(key: "show_arms", label: "Show arms", options: offOn, def: "Off", info: "Show the extended hand mesh with wrist, elbow and shoulder IK. Shoulder and elbow positions are estimated.")]),
+        ("Updates", [Item(key: "auto_updates", label: "Automatic Updates", options: offOn, def: "On", info: "Install stable MacVR, WineXR and SiliconXR releases automatically. MacVR updates finish when the app closes.")]),
         ("General", [Item(key: "render_scale", label: "Render Resolution", options: ["50%", "75%", "100%", "125%", "150%"], def: "100%",
                           info: "Sharper games at higher values, smoother frame rates at lower ones. Applies when you reconnect."),
                      Item(key: "refresh_rate", label: "Headset Refresh Rate", options: ["72", "80", "90"], def: "72",
                           info: "Frames per second on the headset. Higher feels smoother and needs a faster Mac.")]),
-        ("Play Area", [Item(key: "home_style", label: "Home Architecture", options: ["Open vista", "Pavilion", "Observatory"], def: "Pavilion",
-                            info: "The structure around you in your home space."),
+        ("Play Area", [Item(key: "home_style", label: "3D Home", options: ["Room 1107", "Kleeblatt"], def: "Room 1107",
+                            info: "Choose a fully modeled home. Hold a controller stick forward to aim a teleport, then release to move."),
                        Item(key: "floor_grid", label: "Show Floor Grid", options: offOn, def: "On", info: "A subtle grid on the floor of your home."),
                        Item(key: "environment", label: "Home Environment",
                             options: ["Void", "Golden Bay", "Venice Sunset", "Rooftop Night", "Kloofendal Sky", "Lilienstein", "Starry Night",

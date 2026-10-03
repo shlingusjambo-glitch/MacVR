@@ -69,6 +69,7 @@ final class Engine: ObservableObject {
         self?.shm.p.pointee.render_scale = render
         self?.shm.p.pointee.world_scale = world
     }
+    private var updatesObserver: NSObjectProtocol?
     private var overrideObserver: NSObjectProtocol?
 
     /// Settings > About on the Mac: show the welcome tour in the headset again.
@@ -130,6 +131,10 @@ final class Engine: ObservableObject {
 
     init() {
         dash = Dashboard(settings: settings, games: games)
+        if !Engine.offline { Updates.shared.start(settings) }
+        updatesObserver = NotificationCenter.default.addObserver(forName: Updates.changed, object: nil, queue: nil) { [weak self] _ in
+            self?.dq.async { [weak self] in self?.requestDraw() }
+        }
         if !Engine.offline, MenuFallback.install(settings) {
             dash.note("The Quest menu crashed last time, so MacVR switched to the SteamVR menu. You can switch back in Settings > Universal Menu.", 12)
         }
@@ -347,12 +352,12 @@ final class Engine: ObservableObject {
         return NSAppleScript(source: src)?.executeAndReturnError(&err)
     }
 
-    /// Open/close the menu (left ≡ button, the window's X, Resume). Opening re-places it in front of the head.
+    /// Open/close the menu while preserving its spatial anchor. Holding ≡ explicitly recenters it.
     private func setMenu(_ on: Bool) {
         guard on != dashVisible else { return }
         dashVisible = on; grabHand = nil
         UISounds.shared.play(on ? "menuOpen" : "menuClose")
-        if on { needPlace = true; comp.pop(dock: true) } else { DesktopInput.shared.releaseAll() }
+        if on { comp.pop(dock: true) } else { DesktopInput.shared.releaseAll() }
         let trusted = DesktopInput.shared.trusted
         dq.async { [self] in
             if on { dash.opened(); dash.desktopTrusted = trusted } else { dash.release(nil); dash.grabbing = nil }
@@ -409,13 +414,15 @@ final class Engine: ObservableObject {
         comp.setEnvironment(ProcessInfo.processInfo.environment["VR4_ENV"] ?? settings["environment"])   // VR4_ENV: README renders
         comp.setHomeStyle(settings["home_style"])
         comp.setCurved(settings.bool("ui_curved"))
+        comp.showArms = settings.bool("show_arms")
+        comp.skinTone = settings["avatar_skin"]
+        comp.showBody = settings.bool("show_body")
+        comp.showMirror = settings.bool("home_mirror")
         comp.reduceMotion = settings.bool("reduce_motion")
         comp.setTheaterStyle(Compositor.theaterStyle(screen: settings["theater_screen"], curved: settings.bool("theater_curved"), lights: settings["theater_lights"]))
-        if theaterOn { theaterPlace = true }
         comp.setGrid(settings.bool("floor_grid"))
         if eyeW > 0 { encoder.configure(width: eyeW * 2, height: eyeH, fps: fps, mbps: mbps, maxQP: (link.wired ? 23 : 30) + (useHEVC ? 4 : 0), hevc: useHEVC); autoMbps = mbps }
         requestDraw()
-        needPlace = true
     }
 
     private var config: [String: Any] = [:], helloMic = false
@@ -488,6 +495,12 @@ final class Engine: ObservableObject {
     /// Called on the link queue for every TRACKING packet; coalesces onto the render queue.
     private func tracking(_ raw: VR4Tracking, joints raw2: [[VR4Pose]?] = [nil, nil]) {
         var t = raw, joints = raw2
+        // A live controller wins over simultaneous optical joints. Otherwise a
+        // wrist pose replaces the controller grip and shifts in-game hands/input.
+        let controllerHands = [raw.hand.0, raw.hand.1]
+        for i in 0..<2 where controllerHands[i].flags & UInt32(VR4_HAND_ACTIVE | VR4_HAND_POSE_VALID) == UInt32(VR4_HAND_ACTIVE | VR4_HAND_POSE_VALID) {
+            joints[i] = nil
+        }
         for h in 0..<2 { joints[h] = joints[h]?.map { var p = $0; p.py += floorOffset; return p } }
         if floorOffset != 0 {   // LOCAL-space client: lift everything so the floor sits at y = 0 like STAGE
             t.head.py += floorOffset; t.eye.0.pose.py += floorOffset; t.eye.1.pose.py += floorOffset
@@ -508,7 +521,9 @@ final class Engine: ObservableObject {
     }
 
     /// Laser pointers on the menu: trigger press/hold/release, grip = secondary, stick = scroll.
+    private var teleportAiming = false
     private func lasers(_ t: VR4Tracking, _ hs: [VR4Hand], _ valid: [Bool], _ trig: [Bool], _ grip: [Bool], _ rays: inout [Float?], _ poke: [Bool]) {
+        if teleportAiming { return }
         var hits: [(uv: CGPoint, dist: Float, slot: Int)?] = [nil, nil]
         for i in 0..<2 where valid[i] && !poke[i] {
             // a tracked hand points only while thumb and index are poised to pinch (or pinching / dragging)
@@ -559,6 +574,8 @@ final class Engine: ObservableObject {
         let hs = [t.hand.0, t.hand.1]
         let valid = hs.map { $0.flags & UInt32(VR4_HAND_ACTIVE | VR4_HAND_POSE_VALID) == UInt32(VR4_HAND_ACTIVE | VR4_HAND_POSE_VALID) }
         if valid[0] != hands.0 || valid[1] != hands.1 { DispatchQueue.main.async { self.hands = (valid[0], valid[1]) } }
+
+        teleportAiming = comp.updateTeleport(t, enabled: !gameActive && !theaterOn && grabHand == nil)
 
         // System button combos (like the Quest's Meta button): hold ≡ and pull a trigger for a screenshot. The trigger
         // then belongs to the combo until it is let go (no click on the menu, the game sees it released).
@@ -878,7 +895,7 @@ final class Engine: ObservableObject {
     /// Lasers on Mac windows and the picker. Returns the hands that are busy with them (the menu's lasers skip those).
     private func macWindowInput(_ t: VR4Tracking, _ hs: [VR4Hand], _ valid: [Bool], _ trig: [Bool], _ grip: [Bool], _ rays: inout [Float?]) -> [Bool] {
         var mine = [false, false]
-        guard !macWindows.isEmpty || comp.pickerShown, dashVisible || !gameActive else { return mine }   // in a game they're out of sight
+        guard !teleportAiming, !macWindows.isEmpty || comp.pickerShown, dashVisible || !gameActive else { return mine }   // in a game they're out of sight
         let input = DesktopInput.shared
         if let th = twoHand {   // both hands on one window: the gap between them scales it
             if valid[0] && valid[1] && trig[0] && trig[1] {
@@ -1015,6 +1032,7 @@ final class Engine: ObservableObject {
         if let v = ProcessInfo.processInfo.environment["VR4_HAND"]?.split(separator: ",").compactMap({ Float($0) }), v.count == 3 {   // grip position
             hand.grip = pose(v[0], v[1], v[2]); hand.aim = pose(v[0], v[1], v[2]); hand.aim.qx = aimDown.imag.x; hand.aim.qw = aimDown.real
         }
+        hand.stick_y = Float(ProcessInfo.processInfo.environment["VR4_TELEPORT"] ?? "0") ?? 0
         hand.trigger = Float(ProcessInfo.processInfo.environment["VR4_TRIGGER"] ?? "0") ?? 0   // cursor press states
         let pitch = simd_quatf(angle: Float(ProcessInfo.processInfo.environment["VR4_PITCH"] ?? "0") ?? 0, axis: SIMD3(1, 0, 0))   // README renders
         func look(_ x: Float) -> VR4Pose { var p = pose(x, 1.6, 0); p.qx = pitch.imag.x; p.qw = pitch.real; return p }

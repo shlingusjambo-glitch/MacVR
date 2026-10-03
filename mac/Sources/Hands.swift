@@ -11,11 +11,58 @@ import simd
 final class HandModel {
     let node = SCNNode()
     private let left: Bool, meshModel: HeadsetModel
-    private let rest: [SIMD3<Float>], restN: [SIMD3<Float>], colors: Data, element: SCNGeometryElement, material: SCNMaterial
+    private let rest: [SIMD3<Float>], restN: [SIMD3<Float>], colors: Data, armColors: Data, element: SCNGeometryElement, handElement: SCNGeometryElement, torsoElement: SCNGeometryElement, material: SCNMaterial
     private let skin: [(Int, Int, Float)]
     private var bones: [Bone]
     private let joints: [[SIMD3<Float>]]
     private let wristPos: SIMD3<Float>
+    /// Reveal the original mesh beyond its wrist instead of fading it away.
+    var showArms = false { didSet { if showArms != oldValue { apply() } } }
+    static func skinColor(_ name: String) -> NSColor {
+        let tones: [String: (CGFloat, CGFloat, CGFloat)] = ["Light": (0.96, 0.77, 0.64), "Medium": (0.80, 0.57, 0.40), "Tan": (0.65, 0.40, 0.25), "Brown": (0.43, 0.24, 0.14), "Deep": (0.24, 0.12, 0.08)]
+        let rgb = tones[name] ?? (0.17, 0.18, 0.2)
+        return NSColor(srgbRed: rgb.0, green: rgb.1, blue: rgb.2, alpha: 1)
+    }
+    var skinTone = "Original" { didSet { if skinTone != oldValue { applyLook() } } }
+    var showTorso = false { didSet { if showTorso != oldValue { apply() } } }
+    private(set) var posedVertices: [SIMD3<Float>] = []
+    private(set) var torsoTriangles: [Int32] = []
+    var shoulderVertexIndices: [Int] { rest.indices.filter { rest[$0].y > 0.619 } }
+    private var shoulderVertices: [SIMD3<Float>] = []
+    var shoulderRim: [SIMD3<Float>] { shoulderVertices.map { node.simdConvertPosition($0, to: nil) } }
+    private var armElbow: SIMD3<Float>?, armShoulder: SIMD3<Float>?
+    private var bendPole: SIMD3<Float>?
+    private var armTime = CACurrentMediaTime()
+    /// Analytic two-bone IK, wrist-anchored. Head yaw supplies the shoulder, wrist orientation the pole.
+    func updateArm(head: SIMD3<Float>, forward: SIMD3<Float>) {
+        guard showArms else { armElbow = nil; armShoulder = nil; bendPole = nil; return }
+        let right = simd_cross(forward, SIMD3<Float>(0, 1, 0)), side: Float = left ? -1 : 1
+        let wrist = node.simdConvertPosition(wristPos, to: nil)
+        let shoulder = head + right * side * 0.16 - forward * 0.13 + SIMD3<Float>(0, -0.23, 0)
+        let delta = wrist - shoulder, distance = max(0.001, simd_length(delta)), axis = delta / distance
+        let forearmHint = simd_normalize(node.simdConvertVector((Self.forearm - Self.wrist) * mirror, to: nil))
+        let hint = SIMD3<Float>(0, -1, 0) + right * side * 0.5 - forward * 0.2 + forearmHint * 0.6
+        var pole = hint - axis * simd_dot(hint, axis)
+        if simd_length_squared(pole) < 0.0001 { pole = right - axis * simd_dot(right, axis) }
+        if simd_length_squared(pole) < 0.0001 { pole = simd_cross(axis, SIMD3<Float>(0, 0, 1)) }
+        pole = simd_normalize(pole)
+        let now = CACurrentMediaTime(), weight = Float(1 - exp(-min(0.05, now - armTime) * 14)); armTime = now
+        if let old = bendPole {
+            let projected = old - axis * simd_dot(old, axis)
+            let mixed = projected * (1 - weight) + pole * weight
+            if simd_length_squared(mixed) > 0.0001 { pole = simd_normalize(mixed) }
+        }
+        bendPole = pole
+        // Clamp shoulder reach while keeping the tracked wrist exact; retain both bone lengths.
+        let upper: Float = 0.30, lower: Float = 0.27
+        let reach = simd_clamp(distance, abs(upper - lower) + 0.005, upper + lower - 0.002)
+        let root = wrist - axis * reach
+        let along = (upper * upper - lower * lower + reach * reach) / (2 * reach)
+        let elbow = root + axis * along + pole * sqrt(max(0, upper * upper - along * along))
+        armElbow = node.simdConvertPosition(elbow, from: nil)
+        armShoulder = node.simdConvertPosition(root, from: nil)
+        apply()
+    }
     private var placement = matrix_identity_float4x4
     /// Knuckle angles each lower finger wraps the handle with (dev fitting reads them).
     var graspAngles: [[Float]] { grasp }
@@ -101,6 +148,17 @@ final class HandModel {
         var idx: [Int32] = []
         for f in faces { for i in 1..<f.count - 1 { idx += (left ? [f[0], f[i], f[i + 1]] : [f[0], f[i + 1], f[i]]).map(Int32.init) } }
         element = SCNGeometryElement(indices: idx, primitiveType: .triangles)
+        // Remove the extended wrist geometry entirely when the arm experiment is off.
+        let handIndices = stride(from: 0, to: idx.count, by: 3).flatMap { t -> [Int32] in
+            (t..<(t + 3)).allSatisfy { verts[Int(idx[$0])].y <= Self.wrist.y + 0.035 } ? Array(idx[t..<(t + 3)]) : []
+        }
+        handElement = SCNGeometryElement(indices: handIndices, primitiveType: .triangles)
+        var openIndices: [Int32] = []
+        for t in stride(from: 0, to: idx.count, by: 3) {
+            if !(t..<(t + 3)).allSatisfy({ verts[Int(idx[$0])].y > 0.619 }) { openIndices += Array(idx[t..<(t + 3)]) }
+        }
+        torsoElement = SCNGeometryElement(indices: openIndices, primitiveType: .triangles)
+        torsoTriangles = openIndices
         var n = [SIMD3<Float>](repeating: .zero, count: rest.count)
         for t in stride(from: 0, to: idx.count, by: 3) {
             let a = Int(idx[t]), b = Int(idx[t + 1]), c = Int(idx[t + 2])
@@ -148,46 +206,67 @@ final class HandModel {
             for (bone, _, _) in skin { withUnsafeBytes(of: pal[bone == 0 ? 0 : 1 + (bone - 1) / 3]) { d.append(contentsOf: $0) } }
         }
         colors = d
+        var visible = d
+        for i in rest.indices {
+            var alpha: Float = 1
+            withUnsafeBytes(of: &alpha) { visible.replaceSubrange((i * 16 + 12)..<(i * 16 + 16), with: $0) }
+        }
+        armColors = visible
         material = SCNMaterial()
         material.lightingModel = .lambert   // (constant lighting leaves the shader's view vector empty)
         material.diffuse.contents = NSColor.white
         material.blendMode = .alpha
         material.transparencyMode = .singleLayer
-        if !debugColors { material.shaderModifiers = [.fragment: """
+        if !debugColors { applyLook() }
+        let pl = HandModel.place[model.controllerMesh] ?? HandModel.place[.quest2]!
+        let v = pl.rot.vector   // mirrored across grip x for the right hand
+        node.simdOrientation = left ? pl.rot : simd_quatf(vector: SIMD4(v.x, -v.y, -v.z, v.w))
+        node.simdPosition = pl.pos * mirror
+        placement = node.simdTransform
+        node.renderingOrder = 150   // after UI panels, before pointers; transparent hands stay visible
+        node.castsShadow = false
+        if let controller { fitGrasp(controller) }
+        apply()
+    }
+
+    /// Original flat hand appearance. Only the default grey tone is translucent.
+    static func configureSkin(_ material: SCNMaterial, tone: String) {
+        let original = tone == "Original"
+        let color = skinColor(tone)
+        material.lightingModel = .lambert
+        material.diffuse.contents = NSColor.white
+        material.emission.contents = NSColor.black
+        material.specular.contents = NSColor.black
+        material.transparency = 1
+        material.blendMode = original ? .alpha : .replace
+        material.transparencyMode = .singleLayer
+        material.isDoubleSided = false
+        material.readsFromDepthBuffer = true; material.writesToDepthBuffer = !original
+        material.shaderModifiers = [.fragment: """
             #pragma arguments
             float3 fillRGB;
             float3 edgeRGB;
             float fillA;
             float edgeA;
             float edgeW;
+            float defaultTone;
             #pragma transparent
             #pragma body
-            // Horizon OS hands: smoky dark glass with a thin light outline at the silhouette
             float rim = 1.0 - abs(dot(normalize(_surface.normal), normalize(_surface.view)));
-            float edge = smoothstep(1.0 - 0.2 * edgeW, 1.0 - 0.02 * edgeW, rim);
-            float a = _surface.diffuse.a * mix(fillA, edgeA, edge);
+            float edge = smoothstep(1.0 - 0.2 * edgeW, 1.0 - 0.02 * edgeW, rim) * defaultTone;
+            float a = defaultTone > 0.5 ? _surface.diffuse.a * mix(fillA, edgeA, edge) : 1.0;
             float3 c = mix(fillRGB, edgeRGB, edge);
             _output.color = float4(c * a, a);
-            """]; applyLook() }
-        let pl = HandModel.place[model.controllerMesh] ?? HandModel.place[.quest2]!
-        let v = pl.rot.vector   // mirrored across grip x for the right hand
-        node.simdOrientation = left ? pl.rot : simd_quatf(vector: SIMD4(v.x, -v.y, -v.z, v.w))
-        node.simdPosition = pl.pos * mirror
-        placement = node.simdTransform
-        node.renderingOrder = 10   // after the opaque controller
-        node.castsShadow = false
-        if let controller { fitGrasp(controller) }
-        apply()
+            """]
+        let fill = original ? SIMD3<Float>(look[0], look[1], look[2]) : SIMD3(Float(color.redComponent), Float(color.greenComponent), Float(color.blueComponent))
+        material.setValue(NSValue(scnVector3: SCNVector3(fill)), forKey: "fillRGB")
+        material.setValue(NSValue(scnVector3: SCNVector3(look[3], look[4], look[5])), forKey: "edgeRGB")
+        material.setValue(NSNumber(value: original ? look[6] : 1), forKey: "fillA")
+        material.setValue(NSNumber(value: original ? look[7] : 1), forKey: "edgeA")
+        material.setValue(NSNumber(value: look[8]), forKey: "edgeW")
+        material.setValue(NSNumber(value: original ? Float(1) : Float(0)), forKey: "defaultTone")
     }
-
-    /// Pushes HandModel.look into the shader (the tuner calls it on live changes).
-    func applyLook() {
-        let l = HandModel.look
-        material.setValue(NSValue(scnVector3: SCNVector3(l[0], l[1], l[2])), forKey: "fillRGB")
-        material.setValue(NSValue(scnVector3: SCNVector3(l[3], l[4], l[5])), forKey: "edgeRGB")
-        material.setValue(NSNumber(value: l[6]), forKey: "fillA"); material.setValue(NSNumber(value: l[7]), forKey: "edgeA")
-        material.setValue(NSNumber(value: l[8]), forKey: "edgeW")
-    }
+    func applyLook() { Self.configureSkin(material, tone: skinTone) }
 
     // MARK: pose
     private func worldMatrices() -> [simd_float4x4] {
@@ -372,14 +451,34 @@ final class HandModel {
         for (i, p) in rest.enumerated() {
             let (a, b, w) = skin[i]
             let pa = m[a] * SIMD4(p, 1), pb = m[b] * SIMD4(p, 1), q = pa * w + pb * (1 - w)
-            v.append(SIMD3(q.x, q.y, q.z))
+            var vertex = SIMD3(q.x, q.y, q.z)
             let na = m[a] * SIMD4(restN[i], 0), nb = m[b] * SIMD4(restN[i], 0), r = na * w + nb * (1 - w)
-            n.append(simd_normalize(SIMD3(r.x, r.y, r.z)))
+            var normal = simd_normalize(SIMD3(r.x, r.y, r.z))
+            if showArms, p.y > wristPos.y, let elbow = armElbow, let shoulder = armShoulder {
+                // Forearm and upper-arm bones share blended weights around the elbow.
+                let bindElbow = SIMD3<Float>(0.013, 0.32, 0.0072) * mirror
+                let fore = simd_quatf(from: SIMD3<Float>(0, 1, 0), to: simd_normalize(elbow - wristPos))
+                let upper = simd_quatf(from: SIMD3<Float>(0, 1, 0), to: simd_normalize(shoulder - elbow))
+                var lowerOffset = p - wristPos, upperOffset = p - bindElbow
+                lowerOffset.y *= simd_length(elbow - wristPos) / (0.32 - wristPos.y)
+                upperOffset.y *= simd_length(shoulder - elbow) / 0.30
+                let lowerPoint = wristPos + fore.act(lowerOffset)
+                let upperPoint = elbow + upper.act(upperOffset)
+                let t = simd_clamp((p.y - 0.295) / 0.05, 0, 1), upperWeight = t * t * (3 - 2 * t)
+                let start = simd_clamp((p.y - wristPos.y) / 0.045, 0, 1), armWeight = start * start * (3 - 2 * start)
+                let skinned = lowerPoint * (1 - upperWeight) + upperPoint * upperWeight
+                let skinnedNormal = fore.act(restN[i]) * (1 - upperWeight) + upper.act(restN[i]) * upperWeight
+                vertex = vertex * (1 - armWeight) + skinned * armWeight
+                normal = simd_normalize(normal * (1 - armWeight) + skinnedNormal * armWeight)
+            }
+            v.append(vertex); n.append(normal)
         }
+        posedVertices = v
+        shoulderVertices = rest.indices.filter { rest[$0].y > 0.619 }.map { v[$0] }
         let g = SCNGeometry(sources: [SCNGeometrySource(vertices: v.map { SCNVector3($0) }), SCNGeometrySource(normals: n.map { SCNVector3($0) }),
-                                      SCNGeometrySource(data: colors, semantic: .color, vectorCount: rest.count, usesFloatComponents: true,
+                                      SCNGeometrySource(data: showArms ? armColors : colors, semantic: .color, vectorCount: rest.count, usesFloatComponents: true,
                                                         componentsPerVector: 4, bytesPerComponent: 4, dataOffset: 0, dataStride: 16)],
-                            elements: [element])
+                            elements: [showArms ? (showTorso ? torsoElement : element) : handElement])
         g.materials = [material]
         g.subdivisionLevel = HandModel.smooth   // rounds the low-poly fingertips and palm creases
         node.geometry = g

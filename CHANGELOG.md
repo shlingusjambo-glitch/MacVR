@@ -1,5 +1,17 @@
 # Changes
 
+## 1.2.1
+
+- Fix transparent hands appearing behind menu panels, pickers and Mac windows.
+- Fix hidden hands when body mode is enabled outside a home environment.
+- Simplify Quick Settings, Settings categories and the Library; keep per-game menus.
+- Highlight hovered controls without moving them or recentering windows.
+- Add GitHub release updates for MacVR, WineXR and SiliconXR, enabled by default.
+- Add model-based homes with stick-activated teleport points and an arcing pointer.
+- Add experimental rigged arms, torso, skin colours and a stationary mirror.
+- Restore the original flat hand appearance: default grey is translucent; other skin tones are opaque. No neck or head mesh.
+- Improve controller pointer placement, surface-aligned activation rings and UI proximity fading.
+
 ## 1.2.0
 
 ### Universal Menu: the big update

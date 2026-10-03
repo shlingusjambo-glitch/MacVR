@@ -27,6 +27,18 @@ for v in ["home", "spaces", "library", "quick", "keyboard", "settings", "desktop
     show(v)
     assert(dash.testRegionCount() > 10, v + " has no regions")
 }
+// Settings opens as a category grid, and window chrome has no global navigation/status shortcuts.
+show("library")
+assert(!dash.testHasRegion("win:home") && !dash.testHasRegion("win:spaces"), "window footer has no global destinations")
+dash.nav("settings"); dash.draw()
+assert(dash.testHasRegion("sec:updates") && !dash.testHasRegion("set:render_scale"), "Settings category landing")
+dash.click(uv("sec:updates")); dash.draw()
+assert(dash.testHasRegion("set:auto_updates") && dash.testHasRegion("updates:check"), "Updates category controls")
+dash.click(uv("set:categories")); dash.draw()
+assert(dash.testHasRegion("sec:general"), "Return to Settings categories")
+assert(Settings.items["auto_updates"]?.def == "On", "updates enabled by default")
+assert(Updates.newer("v1.10.0", than: "1.9.9"), "numeric release ordering")
+assert(!Updates.newer("v1.2.0", than: "1.2.0") && !Updates.newer("v1.1.9", than: "1.2.0"), "no downgrade or reinstall")
 assert(dash.testHasRegion("qvol") == false) // sanity: regions reset per draw
 
 // grab bar captures the trigger press for menu dragging
@@ -140,11 +152,10 @@ dash.click(uv("space:Starry Night")); assert(testSettings["environment"] == "Sta
 dash.draw(); dash.click(uv("spaces:next")); dash.draw()
 assert(!dash.testHasRegion("spaces:next"), "last space page has no next action")
 dash.click(uv("spaces:home")); assert(dash.view == "home")
-show("quick"); dash.click(uv("q:env")); assert(dash.view == "spaces", "visual environment picker")
 testSettings.set("show_desktop_tabs", "On")
-show("quick"); dash.click(uv("workspace:Focus"))
+dash.nav("overview"); dash.draw(); dash.click(uv("overview:Focus"))
 assert(dash.view == "desktop" && dash.sideViews == ["home", "quick"], "Focus layout")
-show("quick"); dash.click(uv("workspace:Play"))
+dash.nav("overview"); dash.draw(); dash.click(uv("overview:Play"))
 assert(dash.sideViews == [nil, nil], "Play clears side windows")
 // a fixed library for everything below (the test home has no Steam)
 let fake = (0..<30).map { Game(appid: "\(9000 + $0)", name: "Game \($0)", installed: $0 % 3 != 0, vr: $0 % 2 == 0) }
@@ -167,7 +178,7 @@ dash.click(uv("lib:previous")); dash.draw()
 // Universal Menu upgrade: exercise real callbacks and persistent restoration.
 var recenterCount = 0
 dash.recenter = { recenterCount += 1 }
-show("home"); dash.click(uv("dock:overview")); dash.draw()
+show("home"); dash.nav("overview"); dash.draw()
 assert(dash.view == "overview" && dash.testHasRegion("overview:save"))
 dash.click(uv("overview:Focus")); assert(dash.view == "desktop")
 dash.nav("overview"); dash.draw(); dash.click(uv("overview:save")); dash.draw()
@@ -175,7 +186,7 @@ assert(dash.testHasRegion("overview:restore"))
 dash.click(uv("overview:Play")); assert(dash.sideViews == [nil, nil])
 dash.nav("overview"); dash.draw(); dash.click(uv("overview:restore"))
 assert(dash.view == "desktop" && dash.sideViews == ["home", "quick"], "restore saved slots")
-assert(recenterCount >= 3, "layouts recenter the workspace")
+assert(recenterCount == 0, "workspace switches and restoration preserve the menu anchor")
 dash.nav("overview"); dash.draw(); dash.click(uv("overview:close:0")); dash.draw()
 assert(dash.sideViews[0] == nil && !dash.testHasRegion("overview:close:0"))
 dash.click(uv("overview:add:0")); dash.draw(); assert(dash.sideViews[0] == "library")
@@ -217,13 +228,13 @@ dash.gameActive = false; testSettings.set("menu_style", "Quest")
 // Independent window histories.
 show("quick"); dash.nav("overview"); dash.draw(); dash.click(uv("win:back")); assert(dash.view == "quick", "back returns to controls")
 // Reset to a known workspace, then navigate the left window independently.
-dash.draw(); dash.click(uv("workspace:Focus")); dash.draw()
+dash.nav("overview"); dash.draw(); dash.click(uv("overview:Focus")); dash.draw()
 dash.inSlot(0) { dash.nav("spaces") }; dash.draw()
 assert(dash.sideViews[0] == "spaces" && dash.view == "desktop")
 dash.inSlot(0) { dash.click(dash.testUV("win:back", slot: 0)!) }; dash.draw()
 assert(dash.sideViews[0] == "home" && dash.view == "desktop", "side-window back is isolated")
 dash.nav("quick"); dash.draw(); dash.click(uv("win:back")); assert(dash.view == "desktop")
-dash.nav("quick"); dash.draw(); dash.click(uv("workspace:Play"))
+dash.nav("overview"); dash.draw(); dash.click(uv("overview:Play"))
 
 show("library"); dash.draw()
 dash.click(uv("lib:next")); settle(0.3)

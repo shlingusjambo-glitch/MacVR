@@ -314,7 +314,7 @@ final class Games: ObservableObject {
         try fm.createDirectory(at: vrDir, withIntermediateDirectories: true)
 
         // our runtime, shipped inside the .app
-        if let dll = Bundle.main.url(forResource: "vr4mac_openxr", withExtension: "dll") {
+        if let dll = Updates.resource("vr4mac_openxr", extension: "dll", component: "WineXR") {
             let dst = vrDir.appendingPathComponent("vr4mac_openxr.dll")
             try? fm.removeItem(at: dst); try fm.copyItem(at: dll, to: dst)
         }
