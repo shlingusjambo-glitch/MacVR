@@ -2,6 +2,9 @@
 
 ## 1.2.2
 
+- Experimental Hand Tracking is off by default and gates optical poses and pinch input.
+- After 10 seconds without controller movement or input, avatar arms ease into an A pose; movement smoothly restores the controller grip.
+
 - Desktop Home shows left controller, headset and right controller status icons, with a purple-blue gradient while active.
 - Automatic updates check every 15 minutes while idle; game processes and loading defer updates and restarts.
 - Installed updates automatically relaunch MacVR, with rollback if app replacement fails.

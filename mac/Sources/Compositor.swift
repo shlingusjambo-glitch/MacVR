@@ -1569,7 +1569,11 @@ final class Compositor {
             let head = (SIMD3(pose.px, pose.py, pose.pz) + SIMD3(t.eye.1.pose.px, t.eye.1.pose.py, t.eye.1.pose.pz)) / 2
             var forward = simd_quatf(ix: pose.qx, iy: pose.qy, iz: pose.qz, r: pose.qw).act(SIMD3<Float>(0, 0, -1)); forward.y = 0
             forward = simd_length_squared(forward) > 0.001 ? simd_normalize(forward) : SIMD3(0, 0, -1)
-            for i in handModels.indices where !hands[i].grip.isHidden && !showBody { handModels[i]?.updateArm(head: head, forward: forward) }
+            let tracked = [t.hand.0, t.hand.1]
+            for i in handModels.indices where !hands[i].grip.isHidden {
+                handModels[i]?.updateRestPose(tracked[i], head: head, forward: forward)
+                if !showBody { handModels[i]?.updateArm(head: head, forward: forward) }
+            }
         }
         tickSlots()   // runs every frame: window snap animation
         let hs = [t.hand.0, t.hand.1]

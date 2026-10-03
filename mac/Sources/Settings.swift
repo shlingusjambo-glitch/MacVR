@@ -16,6 +16,7 @@ final class Settings: ObservableObject {
     static let offOn = ["Off", "On"]
     static let schema: [(String, [Item])] = [
         ("Experimental", [
+            Item(key: "hand_tracking", label: "Hand Tracking", options: offOn, def: "Off", info: "Use tracked hands for pointing, pinching and game input when controllers are put down."),
             Item(key: "avatar_skin", label: "Skin tone", options: ["Original", "Light", "Medium", "Tan", "Brown", "Deep"], def: "Original", info: "Appearance of your hands, arms and experimental body."),
             Item(key: "show_body", label: "Show body", options: offOn, def: "Off", info: "Extend the arm shoulder mesh into a torso. No head or legs."),
             Item(key: "home_mirror", label: "Home mirror", options: offOn, def: "Off", info: "A mirror in your home showing your avatar."),

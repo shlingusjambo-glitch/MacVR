@@ -500,10 +500,16 @@ final class Engine: ObservableObject {
     /// Called on the link queue for every TRACKING packet; coalesces onto the render queue.
     private func tracking(_ raw: VR4Tracking, joints raw2: [[VR4Pose]?] = [nil, nil]) {
         var t = raw, joints = raw2
+        if !settings.bool("hand_tracking") {
+            joints = [nil, nil]
+            // Never forward optical hand poses or pinch input while the experiment is off.
+            if t.hand.0.flags & UInt32(VR4_HAND_TRACKED) != 0 { t.hand.0 = VR4Hand() }
+            if t.hand.1.flags & UInt32(VR4_HAND_TRACKED) != 0 { t.hand.1 = VR4Hand() }
+        }
         // A live controller wins over simultaneous optical joints. Otherwise a
         // wrist pose replaces the controller grip and shifts in-game hands/input.
         let controllerHands = [raw.hand.0, raw.hand.1]
-        for i in 0..<2 where controllerHands[i].flags & UInt32(VR4_HAND_ACTIVE | VR4_HAND_POSE_VALID) == UInt32(VR4_HAND_ACTIVE | VR4_HAND_POSE_VALID) {
+        for i in 0..<2 where controllerHands[i].flags & UInt32(VR4_HAND_ACTIVE | VR4_HAND_POSE_VALID | VR4_HAND_TRACKED) == UInt32(VR4_HAND_ACTIVE | VR4_HAND_POSE_VALID) {
             joints[i] = nil
         }
         for h in 0..<2 { joints[h] = joints[h]?.map { var p = $0; p.py += floorOffset; return p } }

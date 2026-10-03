@@ -63,6 +63,39 @@ final class HandModel {
         armShoulder = node.simdConvertPosition(root, from: nil)
         apply()
     }
+    private var idleAnchor: SIMD3<Float>?, idleRotation: simd_quatf?
+    private var lastMovement = CACurrentMediaTime(), restTime = CACurrentMediaTime()
+    private var restWeight: Float = 0
+    /// Ease the displayed avatar wrist into an A pose; input/controller poses stay tracked.
+    func updateRestPose(_ hand: VR4Hand, head: SIMD3<Float>, forward: SIMD3<Float>) {
+        guard showArms, !isTracked, let parent = node.parent else {
+            idleAnchor = nil; idleRotation = nil; restWeight = 0; lastMovement = CACurrentMediaTime()
+            if !isTracked { node.simdTransform = placement }
+            return
+        }
+        let now = CACurrentMediaTime(), dt = min(0.05, max(0, now - restTime)); restTime = now
+        let position = SIMD3(hand.grip.px, hand.grip.py, hand.grip.pz)
+        let rotation = simd_normalize(simd_quatf(ix: hand.grip.qx, iy: hand.grip.qy, iz: hand.grip.qz, r: hand.grip.qw))
+        let moved = idleAnchor.map { simd_distance($0, position) > 0.012 } ?? true
+        let turned = idleRotation.map { 2 * acos(min(1, abs(simd_dot($0.vector, rotation.vector)))) > 0.06 } ?? true
+        let input = hand.buttons != 0 || hand.trigger > 0.05 || hand.squeeze > 0.05 || abs(hand.stick_x) + abs(hand.stick_y) > 0.15
+        if moved || turned || input {
+            lastMovement = now; idleAnchor = position; idleRotation = rotation
+        }
+        let target: Float = now - lastMovement >= 10 ? 1 : 0
+        restWeight += (target - restWeight) * Float(1 - exp(-dt * (target == 0 ? 5 : 2)))
+        let held = parent.simdWorldTransform * placement
+        let heldRotation = simd_quatf(held), heldPosition = SIMD3(held.columns.3.x, held.columns.3.y, held.columns.3.z)
+        let side: Float = left ? -1 : 1, right = simd_normalize(simd_cross(forward, SIMD3<Float>(0, 1, 0)))
+        let shoulder = head + right * side * 0.16 - forward * 0.13 + SIMD3<Float>(0, -0.23, 0)
+        let wrist = shoulder + right * side * 0.31 + SIMD3<Float>(0, -0.44, 0)
+        let yaw = simd_quatf(angle: atan2(-forward.x, -forward.z), axis: SIMD3<Float>(0, 1, 0))
+        let relaxed = yaw * simd_quatf(from: SIMD3<Float>(0, 1, 0), to: simd_normalize(SIMD3<Float>(-side * 0.31, 0.44, 0)))
+        let restPosition = wrist - relaxed.act(wristPos)
+        var world = simd_float4x4(simd_slerp(heldRotation, relaxed, restWeight))
+        world.columns.3 = SIMD4(heldPosition * (1 - restWeight) + restPosition * restWeight, 1)
+        node.simdTransform = simd_inverse(parent.simdWorldTransform) * world
+    }
     private var placement = matrix_identity_float4x4
     /// Knuckle angles each lower finger wraps the handle with (dev fitting reads them).
     var graspAngles: [[Float]] { grasp }
