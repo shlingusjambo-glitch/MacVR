@@ -2,7 +2,7 @@
 
 Settings → Updates controls updates for MacVR, WineXR and SiliconXR. Automatic
 Updates defaults to On. The app checks stable releases 30 seconds after startup
-and every six hours; Check for updates runs a check immediately. With automatic
+and every 15 minutes while no game is open; Check for updates runs a check immediately. With automatic
 updates off, checking only reports availability; Install available updates is an
 explicit action.
 
@@ -20,8 +20,8 @@ Existing game processes retain their loaded runtime; updates are used on the nex
 launch/registration.
 
 MacVR is staged as Pending-MacVR.app. A helper waits for the running app to exit,
-backs up its bundle, copies the verified replacement and restores the backup if
-copying fails. No restart is forced during a game. An unwritable installation
+backs up its bundle, copies the verified replacement, relaunches MacVR and restores the backup if
+copying fails. After installing an update, MacVR automatically exits and relaunches while idle. A game launching during a download defers the restart until it closes. An unwritable installation
 folder or a missing digest is reported in the Updates section.
 
 Validation: app build, dashboard category/update-control interaction tests,

@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import AppKit
 
 /// Stable GitHub releases, verified before installation. Downloads never overwrite a running runtime.
 final class Updates {
@@ -11,6 +12,10 @@ final class Updates {
     private var timer: DispatchSourceTimer?
     private var settings: Settings?
     private var pendingMacVersion: String?
+    private var gameOpen: () -> Bool = { true }
+    private var lastAutomaticCheck = Date.distantPast
+    private var restartPending = false, manualRestart = false, relaunchHelperStarted = false
+
     var status: String { lock.lock(); defer { lock.unlock() }; return message }
     private func say(_ text: String) { lock.lock(); message = text; lock.unlock(); NotificationCenter.default.post(name: Self.changed, object: nil) }
     private static var root: URL { appSupport.appendingPathComponent("Updates") }
@@ -23,12 +28,32 @@ final class Updates {
         let installed = UserDefaults.standard.string(forKey: "updates.version." + component) ?? "0"
         return FileManager.default.fileExists(atPath: file.path) && !newer(bundledVersion(component), than: installed) ? file : Bundle.main.url(forResource: name, withExtension: ext)
     }
-    func start(_ settings: Settings) {
-        self.settings = settings
+    func start(_ settings: Settings, gameOpen: @escaping () -> Bool) {
+        self.settings = settings; self.gameOpen = gameOpen
         guard timer == nil else { return }
         let t = DispatchSource.makeTimerSource(queue: queue)
-        t.schedule(deadline: .now() + 30, repeating: 6 * 60 * 60)
-        t.setEventHandler { [weak self] in self?.check() }; t.resume(); timer = t
+        t.schedule(deadline: .now() + 30, repeating: 60)
+        t.setEventHandler { [weak self] in self?.automaticTick() }; t.resume(); timer = t
+    }
+    private func automaticTick() {
+        restartIfIdle()
+        guard settings?.bool("auto_updates") == true, !gameOpen(),
+              Date().timeIntervalSince(lastAutomaticCheck) >= 15 * 60 else { return }
+        lastAutomaticCheck = Date(); check()
+    }
+    private func restartIfIdle() {
+        guard restartPending, settings?.bool("auto_updates") == true || manualRestart, !gameOpen() else { return }
+        if !relaunchHelperStarted {
+            let helper = Process(); helper.executableURL = URL(fileURLWithPath: "/bin/sh")
+            helper.arguments = ["-c", "while kill -0 \"$1\" 2>/dev/null; do sleep 1; done; /usr/bin/open -n \"$2\"", "relaunch", String(getpid()), Bundle.main.bundleURL.path]
+            helper.standardOutput = FileHandle.nullDevice; helper.standardError = FileHandle.nullDevice
+            do { try helper.run(); relaunchHelperStarted = true }
+            catch { say("Update installed; relaunch failed: \(error.localizedDescription)"); return }
+        }
+        DispatchQueue.main.async { [self] in
+            guard !gameOpen(), settings?.bool("auto_updates") == true || manualRestart else { return }
+            NSApplication.shared.terminate(nil)
+        }
     }
     func check(force: Bool = false, apply: Bool = false) {
         guard force || settings?.bool("auto_updates") == true else { return }
@@ -41,7 +66,7 @@ final class Updates {
                 do { results.append(try update(component, install: settings?.bool("auto_updates") == true || apply)) }
                 catch { results.append("\(component): \(error.localizedDescription)") }
             }
-            say(results.joined(separator: " · "))
+            say(results.joined(separator: " · ")); restartIfIdle()
         }
     }
     private struct Asset: Decodable { let name: String; let browser_download_url: URL; let digest: String? }
@@ -96,12 +121,16 @@ final class Updates {
         let version = hasInstalled && Self.newer(saved, than: baseline) ? saved : baseline
         guard Self.newer(release.tag_name, than: version) else { return "\(component) up to date" }
         guard install else { return "\(component) \(release.tag_name) available" }
+        guard !gameOpen() else { return "\(component) update waits until the game closes" }
+        if component == "MacVR", pendingMacVersion == release.tag_name {
+            restartIfIdle(); return "MacVR update ready; restarting when idle"
+        }
+        manualRestart = manualRestart || settings?.bool("auto_updates") != true
         let fm = FileManager.default, scratch = Self.root.appendingPathComponent(UUID().uuidString)
         try fm.createDirectory(at: scratch, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: scratch) }
         say("Downloading \(component) \(release.tag_name)…")
         if component == "MacVR" {
-            if pendingMacVersion == release.tag_name { return "MacVR installs on exit" }
             guard let asset = release.assets.first(where: { $0.name.hasSuffix("-mac.zip") }) else { throw failure("Mac archive missing") }
             let zip = try download(asset, into: scratch)
             let entries = try run("/usr/bin/unzip", ["-Z1", zip.path]).split(separator: "\n")
@@ -125,16 +154,18 @@ final class Updates {
             /bin/mv "$3" "$backup" || exit 1
             if /usr/bin/ditto "$2" "$3"; then
                 /bin/rm -rf "$backup" "$2"
+                /usr/bin/open -n "$3"
             else
                 /bin/rm -rf "$3"
                 /bin/mv "$backup" "$3"
+                /usr/bin/open -n "$3"
             fi
             """.write(to: script, atomically: true, encoding: .utf8)
             let helper = Process(); helper.executableURL = URL(fileURLWithPath: "/bin/sh")
             helper.arguments = [script.path, String(getpid()), staged.path, target.path]
             helper.standardOutput = FileHandle.nullDevice; helper.standardError = FileHandle.nullDevice
-            try helper.run(); pendingMacVersion = release.tag_name
-            return "MacVR \(release.tag_name) installs on exit"
+            try helper.run(); pendingMacVersion = release.tag_name; relaunchHelperStarted = true; restartPending = true
+            return "MacVR \(release.tag_name) ready; restarting when idle"
         }
         let names = component == "WineXR" ? ["vr4mac_openxr.dll"] : ["libsiliconxr_openxr.dylib", "libopenvr_api.dylib", "liblwjgl_openvr.dylib"]
         for name in names {
@@ -158,6 +189,7 @@ final class Updates {
         if fm.fileExists(atPath: target.path) { try fm.moveItem(at: target, to: backup) }
         do { try fm.moveItem(at: scratch, to: target) }
         catch { if fm.fileExists(atPath: backup.path) { try? fm.moveItem(at: backup, to: target) }; throw error }
+        restartPending = true
         UserDefaults.standard.set(release.tag_name, forKey: "updates.version.\(component)")
         return "\(component) \(release.tag_name) installed; used next launch"
     }

@@ -1,5 +1,11 @@
 # Changes
 
+## 1.2.2
+
+- Desktop Home shows left controller, headset and right controller status icons, with a purple-blue gradient while active.
+- Automatic updates check every 15 minutes while idle; game processes and loading defer updates and restarts.
+- Installed updates automatically relaunch MacVR, with rollback if app replacement fails.
+
 ## 1.2.1
 
 - Fix transparent hands appearing behind menu panels, pickers and Mac windows.

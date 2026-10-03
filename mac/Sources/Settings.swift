@@ -20,7 +20,7 @@ final class Settings: ObservableObject {
             Item(key: "show_body", label: "Show body", options: offOn, def: "Off", info: "Extend the arm shoulder mesh into a torso. No head or legs."),
             Item(key: "home_mirror", label: "Home mirror", options: offOn, def: "Off", info: "A mirror in your home showing your avatar."),
             Item(key: "show_arms", label: "Show arms", options: offOn, def: "Off", info: "Show the extended hand mesh with wrist, elbow and shoulder IK. Shoulder and elbow positions are estimated.")]),
-        ("Updates", [Item(key: "auto_updates", label: "Automatic Updates", options: offOn, def: "On", info: "Install stable MacVR, WineXR and SiliconXR releases automatically. MacVR updates finish when the app closes.")]),
+        ("Updates", [Item(key: "auto_updates", label: "Automatic Updates", options: offOn, def: "On", info: "Install stable MacVR, WineXR and SiliconXR releases automatically. Checks every 15 minutes while no game is open. Installed updates restart MacVR automatically when idle.")]),
         ("General", [Item(key: "render_scale", label: "Render Resolution", options: ["50%", "75%", "100%", "125%", "150%"], def: "100%",
                           info: "Sharper games at higher values, smoother frame rates at lower ones. Applies when you reconnect."),
                      Item(key: "refresh_rate", label: "Headset Refresh Rate", options: ["72", "80", "90"], def: "72",

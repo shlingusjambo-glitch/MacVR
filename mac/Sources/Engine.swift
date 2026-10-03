@@ -62,6 +62,7 @@ final class Engine: ObservableObject {
     @Published var connected = false
     @Published var device = ""
     @Published var hands = (false, false)
+    @Published var controllers = (false, false)
     @Published var nowPlaying = ""
     @Published var streamInfo = ""   // e.g. "USB · 2432x1344 @ 72 Hz" for the Mac window
     @Published var connectionIssue = ""
@@ -131,7 +132,11 @@ final class Engine: ObservableObject {
 
     init() {
         dash = Dashboard(settings: settings, games: games)
-        if !Engine.offline { Updates.shared.start(settings) }
+        if !Engine.offline { Updates.shared.start(settings, gameOpen: { [weak self] in
+            guard let self else { return true }
+            let busy = self.rq.sync { self.gameActive || self.loadingSince != nil || self.theaterOn }
+            return busy || Games.isGameRunning()
+        }) }
         updatesObserver = NotificationCenter.default.addObserver(forName: Updates.changed, object: nil, queue: nil) { [weak self] _ in
             self?.dq.async { [weak self] in self?.requestDraw() }
         }
@@ -239,7 +244,7 @@ final class Engine: ObservableObject {
                 dq.async { [weak self] in self?.dash.release(nil); self?.dash.grabbing = nil; self?.dash.headsetBattery = -1; self?.requestDraw() }
             }
             UISounds.shared.headsetOnly = false
-            DispatchQueue.main.async { self?.connected = false; self?.hands = (false, false); self?.streamInfo = "" }
+            DispatchQueue.main.async { self?.connected = false; self?.hands = (false, false); self?.controllers = (false, false); self?.streamInfo = "" }
         }
         encoder.onFrame = { [weak self] data, idr, t in   // VideoToolbox thread: counters live on rq
             self?.rq.async { [weak self] in
@@ -574,6 +579,10 @@ final class Engine: ObservableObject {
         let hs = [t.hand.0, t.hand.1]
         let valid = hs.map { $0.flags & UInt32(VR4_HAND_ACTIVE | VR4_HAND_POSE_VALID) == UInt32(VR4_HAND_ACTIVE | VR4_HAND_POSE_VALID) }
         if valid[0] != hands.0 || valid[1] != hands.1 { DispatchQueue.main.async { self.hands = (valid[0], valid[1]) } }
+        let controllerValid = hs.enumerated().map { valid[$0.offset] && $0.element.flags & UInt32(VR4_HAND_TRACKED) == 0 }
+        if controllerValid[0] != controllers.0 || controllerValid[1] != controllers.1 {
+            DispatchQueue.main.async { self.controllers = (controllerValid[0], controllerValid[1]) }
+        }
 
         teleportAiming = comp.updateTeleport(t, enabled: !gameActive && !theaterOn && grabHand == nil)
 

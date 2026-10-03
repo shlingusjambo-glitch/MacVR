@@ -416,7 +416,15 @@ struct CompanionView: View {
     private var home: some View {
         VStack(alignment: .leading, spacing: 20) {
             VStack(alignment: .leading, spacing: 16) {
-                Label(e.connected ? "CONNECTED · \(e.device)" : "LET’S GET YOU INTO VR", systemImage: "visionpro").font(.caption.bold()).tracking(1)
+                HStack {
+                    Text(e.connected ? "CONNECTED · \(e.device)" : "LET’S GET YOU INTO VR").font(.caption.bold()).tracking(1)
+                    Spacer()
+                    HStack(spacing: 18) {
+                        deviceIcon("l.joystick", label: "Left controller", active: e.connected && e.controllers.0)
+                        deviceIcon("visionpro", label: "Headset", active: e.connected)
+                        deviceIcon("r.joystick", label: "Right controller", active: e.connected && e.controllers.1)
+                    }
+                }
                 Text(e.nowPlaying.isEmpty ? "Welcome home." : e.nowPlaying).font(.system(size: 36, weight: .bold))
                 Text(e.connected ? e.streamInfo : "Connect your Quest by USB, then open MacVR in the headset.").foregroundColor(.white.opacity(0.8))
                 HStack {
@@ -438,6 +446,15 @@ struct CompanionView: View {
                 action("Learn the controls", "sparkles", "Replay the in-headset tour") { e.replayTour() }
             }
         }
+    }
+    private func deviceIcon(_ symbol: String, label: String, active: Bool) -> some View {
+        Image(systemName: symbol).font(.system(size: 27, weight: .medium))
+            .foregroundStyle(active
+                ? LinearGradient(colors: [Color(red: 0.65, green: 0.3, blue: 1), Color(red: 0.15, green: 0.5, blue: 1)], startPoint: .topLeading, endPoint: .bottomTrailing)
+                : LinearGradient(colors: [OS.dim.opacity(0.45), OS.dim.opacity(0.45)], startPoint: .topLeading, endPoint: .bottomTrailing))
+            .frame(width: 38, height: 38)
+            .accessibilityLabel("\(label): \(active ? "active" : "inactive")")
+            .help("\(label): \(active ? "active" : "inactive")")
     }
     private func action(_ title: String, _ symbol: String, _ subtitle: String, _ fn: @escaping () -> Void) -> some View {
         Button(action: fn) {

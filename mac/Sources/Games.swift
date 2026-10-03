@@ -443,6 +443,14 @@ final class Games: ObservableObject {
     /// Wine processes show Windows paths (C:\\...\\steamapps\\common\\Game\\Game.exe), so match any separator; standalone games
     /// live in C:\\VR4Mac\\<name>. Asks nicely, then force-quits whatever is left after 3 s.
     static let gamePattern = #"steamapps.common.|^[A-Za-z]:.VR4Mac."#
+    /// Read-only process check also catches paused Wine games that stop submitting VR frames.
+    static func isGameRunning() -> Bool {
+        let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        process.arguments = ["-f", gamePattern + "|[Vv]ivecraft|net.minecraft.client.main.Main"]
+        process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+        do { try process.run(); process.waitUntilExit(); return process.terminationStatus == 0 }
+        catch { return true } // defer automatic restarts if process inspection is unavailable
+    }
     func quitGame() {
         DispatchQueue.global().async {
             func pkill(_ args: [String]) { let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/pkill"); p.arguments = args + ["-f", Games.gamePattern]; try? p.run(); p.waitUntilExit() }
