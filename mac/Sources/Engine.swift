@@ -1072,6 +1072,12 @@ final class Engine: ObservableObject {
         func look(_ x: Float) -> VR4Pose { var p = pose(x, 1.6, 0); p.qx = pitch.imag.x; p.qw = pitch.real; return p }
         var t = VR4Tracking(time_ns: 1, head: look(0), eye: (VR4Eye(pose: look(-0.032), fov: fov), VR4Eye(pose: look(0.032), fov: fov)),
                             hand: (VR4Hand(), hand))
+        // VR4_CAM="dx,dy,dz,yaw": move only the eyes (the menu stays placed at the head): camera moves for video renders
+        if let c = ProcessInfo.processInfo.environment["VR4_CAM"]?.split(separator: ",").compactMap({ Float($0) }), c.count == 4 {
+            let q = simd_quatf(angle: c[3], axis: SIMD3(0, 1, 0)) * pitch
+            func cam(_ x: Float) -> VR4Pose { let o = q.act(SIMD3(x, 0, 0)); return VR4Pose(px: o.x + c[0], py: 1.6 + c[1], pz: o.z + c[2], qx: q.imag.x, qy: q.imag.y, qz: q.imag.z, qw: q.real) }
+            t.eye = (VR4Eye(pose: cam(-0.032), fov: fov), VR4Eye(pose: cam(0.032), fov: fov))
+        }
         if ProcessInfo.processInfo.environment["VR4_TRACKED"] == "1" {   // a tracked right hand, fingers forward, in front of the menu
             let q = simd_quatf(angle: .pi / 2, axis: SIMD3(1, 0, 0))
             let j = HandModel.restJoints(left: false).map { p -> VR4Pose in let w = q.act(p) + SIMD3(0.12, 1.35, -0.38); return VR4Pose(px: w.x, py: w.y, pz: w.z, qx: 0, qy: 0, qz: 0, qw: 1) }
@@ -1123,6 +1129,10 @@ final class Engine: ObservableObject {
             dq.sync { _ = dash.pointer(CGPoint(x: h[0] / Double(Dashboard.W), y: h[1] / Double(Dashboard.H))) }; requestDraw()
         }
         Thread.sleep(forTimeInterval: 0.4)   // let window pop-in animations settle
+        if let n = ProcessInfo.processInfo.environment["VR4_NOTE"] {   // video renders: a notification card, settled ("text|kind")
+            let parts = n.split(separator: "|").map(String.init)
+            dq.sync { dash.note(parts[0], 60, kind: parts.count > 1 ? parts[1] : nil) }; Thread.sleep(forTimeInterval: 0.6); requestDraw(); dq.sync {}; dq.sync {}
+        }
         if let p = ProcessInfo.processInfo.environment["VR4_DASH_PNG"] {   // video renders: the raw dashboard canvas with alpha
             dq.sync { dash.draw(); if let img = dash.context.makeImage() { try? NSBitmapImageRep(cgImage: img).representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: p)) } }
             return

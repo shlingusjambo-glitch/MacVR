@@ -1,5 +1,16 @@
 # Changes
 
+## 1.6.0
+
+Closer to the real Quest menu, measured against Horizon OS:
+
+- Windows open with a quick 250 ms fade and a small rise; rounder 20 dp window corners.
+- Dock: status, notifications and search sit dim until you point at them, with larger hit areas. The open app gets a blue bar along the top; a running game gets a small pill under it.
+- Quick Settings tiles are translucent until switched on; sliders have the blue gradient fill.
+- Library art slowly zooms in while you point at it; downloads show a moving glare.
+- Notifications: category filters with counts.
+- Darker, tighter tooltips and a quieter hover sound.
+
 ## 1.5.1
 
 - Notifications show again: with the window minimised, and in games (head-locked) while the menu is closed.

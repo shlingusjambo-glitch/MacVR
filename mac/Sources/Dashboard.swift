@@ -504,11 +504,11 @@ final class Dashboard {
     private func transition(_ body: () -> Void) {
         let key = view + (view == "welcome" ? "\(step)" : view == "appsettings" ? settingsFor?.appid ?? "" : "")
         if key != shownKey { shownKey = key; shownSince = now }
-        let p = reduceMotion ? 1 : min(1, CGFloat(now - shownSince) / 0.28)
+        let p = reduceMotion ? 1 : min(1, CGFloat(now - shownSince) / 0.25)   // Horizon: 250 ms fade with a 4 dp rise
         guard p < 1 else { body(); return }
         keepAnimating()
-        let e = 1 - pow(1 - p, 3)
-        ctx.saveGState(); ctx.setAlpha(e); ctx.translateBy(x: 0, y: 30 * (1 - e))
+        let e = 0.5 - 0.5 * cos(.pi * p)   // accelerate-decelerate
+        ctx.saveGState(); ctx.setAlpha(e); ctx.translateBy(x: 0, y: 9 * (1 - e))
         ctx.beginTransparencyLayer(in: Dashboard.WIN, auxiliaryInfo: nil)
         body()
         ctx.endTransparencyLayer(); ctx.restoreGState()
@@ -620,11 +620,11 @@ final class Dashboard {
         for (i, l) in lines.enumerated() { txt(l, x, y + CGFloat(i) * lh, size, c, bold: bold, maxW: maxW) }
         return CGFloat(lines.count) * lh
     }
-    private func cover(_ img: CGImage?, _ r: CGRect, _ name: String, rad: CGFloat = 14) {
+    private func cover(_ img: CGImage?, _ r: CGRect, _ name: String, rad: CGFloat = 14, zoom: CGFloat = 1) {
         ctx.saveGState()
         ctx.addPath(path(r, rad)); ctx.clip()
         if let img {
-            let s = max(r.width / CGFloat(img.width), r.height / CGFloat(img.height))
+            let s = max(r.width / CGFloat(img.width), r.height / CGFloat(img.height)) * zoom
             let w = CGFloat(img.width) * s, h = CGFloat(img.height) * s
             ctx.translateBy(x: r.midX - w / 2, y: r.midY + h / 2); ctx.scaleBy(x: 1, y: -1)
             ctx.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
@@ -854,11 +854,11 @@ final class Dashboard {
     /// along the bottom with close and minimise on the left (red / yellow on hover) and the app name centred.
     private func questChrome() {
         let w = Dashboard.WIN, bar = CGRect(x: w.minX, y: w.maxY - 72, width: w.width, height: 72)
-        questPanel(w, 30)
-        ctx.saveGState(); ctx.addPath(path(w, 30)); ctx.clip()
+        questPanel(w, 44)   // Horizon (Iris): 20 dp panel radius
+        ctx.saveGState(); ctx.addPath(path(w, 44)); ctx.clip()
         ctx.setFillColor(col(0x00000038)); ctx.fill(bar)
         ctx.restoreGState()
-        if contrast { outline(w.insetBy(dx: 1, dy: 1), 30, 0xffffff70, 2); rr(CGRect(x: bar.minX, y: bar.minY, width: bar.width, height: 2), 0, 0xffffff50) }
+        if contrast { outline(w.insetBy(dx: 1, dy: 1), 44, 0xffffff70, 2); rr(CGRect(x: bar.minX, y: bar.minY, width: bar.width, height: 2), 0, 0xffffff50) }
         txt(title, bar.midX, bar.midY + 10, 27, 0xd2d8dcff, align: 0.5)
         if view == "welcome" { return }   // the tour can't be closed or left (no softlock)
         let x = CGRect(x: bar.minX + 14, y: bar.minY + 8, width: 56, height: 56), m = CGRect(x: x.maxX + 8, y: x.minY, width: 56, height: 56)
@@ -1052,61 +1052,62 @@ final class Dashboard {
         questPanel(d, 28)   // Horizon OS dock: a rounded rectangle with the windows' indigo/teal/rose tint
         var tip: (CGRect, String)?
         // left side, Horizon OS order: profile, status pill (time, Wi-Fi, controllers) -> Quick Settings, notifications, search
-        func sq(_ id: String, _ r: CGRect, _ label: String, _ fn: @escaping () -> Void) -> Bool {   // squircle button
-            let h = btn(id, r, fn); if h { tip = (r, label) }
-            rr(r, 18, isPressed(id) ? 0xffffff3a : h ? 0xffffff28 : 0xffffff14); return h   // the dock's tint shows through
+        func sq(_ id: String, _ r: CGRect, _ label: String, selected: Bool = false, _ fn: @escaping () -> Void) -> Bool {   // squircle button
+            let h = btn(id, r.insetBy(dx: -6, dy: -8), fn); if h { tip = (r, label) }   // hit area ~20% larger than the visual
+            rr(r, 18, isPressed(id) || selected ? 0xffffff1a : h ? 0xffffff33 : 0xffffff0a); return h   // Horizon: hover white 20%, press 10%
         }
         let avX = d.minX + 18, stX = avX + 70   // unmirrored x positions; m() mirrors for the left-handed layout
         let av = m(CGRect(x: avX, y: d.midY - 28, width: 56, height: 56))
-        _ = sq("dock:me", av, Dashboard.userName.isEmpty ? "Profile" : Dashboard.userName) { [unowned self] in nav("profile") }
+        _ = sq("dock:me", av, Dashboard.userName.isEmpty ? "Profile" : Dashboard.userName, selected: view == "profile") { [unowned self] in nav("profile") }
         avatar(av.insetBy(dx: 3, dy: 3), 15)
         rr(CGRect(x: av.maxX - 15, y: av.maxY - 15, width: 17, height: 17), 8.5, 0x2c3442ff)
         rr(CGRect(x: av.maxX - 13, y: av.maxY - 13, width: 13, height: 13), 6.5, 0x45d36bff)   // headset connected
-        if view == "profile" { rr(CGRect(x: av.midX - 12, y: d.maxY - 10, width: 24, height: 4), 2, 0xc8d0d6ff) }
         let st = m(CGRect(x: stX, y: d.midY - 28, width: pw, height: 56))
-        if btn("dock:quick", st, { [unowned self] in nav("quick") }) { tip = (st, "Quick Settings") }
-        rr(st, 18, isPressed("dock:quick") ? 0xffffff3a : hover == "dock:quick" ? 0xffffff28 : 0xffffff14)
-        txt(time, st.minX + 22, st.midY + 10, 28, 0xffffffff, bold: true)
+        let qh = btn("dock:quick", st.insetBy(dx: -6, dy: -8), { [unowned self] in nav("quick") }); if qh { tip = (st, "Quick Settings") }
+        rr(st, 18, isPressed("dock:quick") || view == "quick" ? 0xffffff1a : qh ? 0xffffff33 : 0xffffff0a)
+        let ic: UInt32 = qh ? 0xffffffff : 0xffffff99   // Horizon: status text and icons at 60% until hovered
+        txt(time, st.minX + 22, st.midY + 10, 28, ic, bold: true)
         var sx = st.minX + 30 + textW(time, 28, bold: true)
         if !fpsText.isEmpty { txt(fpsText, sx, st.midY + 9, 24, 0x5ee07aff); sx += textW(fpsText, 24) + 10 }
-        icon(linkStatus == "USB" ? "usb" : "wifi", sx + 18, st.midY, 0xffffffff, 0.6); sx += 40
+        icon(linkStatus == "USB" ? "usb" : "wifi", sx + 18, st.midY, ic, 0.6); sx += 40
         for (i, on) in [controllersOn.0, controllersOn.1].enumerated() {   // left / right controller: lit while tracked
             let cx = sx + 22 + CGFloat(i) * 44   // Material Symbols' handheld controller, mirrored for the left hand
             ctx.saveGState(); ctx.translateBy(x: cx, y: st.midY); if i == 0 { ctx.scaleBy(x: -1, y: 1) }
-            icon("vrcontroller", 0, 0, on ? 0xffffffff : 0xffffff50, 0.95); ctx.restoreGState()
+            icon("vrcontroller", 0, 0, on ? ic : 0xffffff40, 0.95); ctx.restoreGState()
         }
-        if view == "quick" { rr(CGRect(x: st.midX - 12, y: d.maxY - 10, width: 24, height: 4), 2, 0xc8d0d6ff) }
         let bell = m(CGRect(x: stX + pw + 14, y: d.midY - 28, width: 56, height: 56))
-        _ = sq("dock:notifications", bell, unread > 0 ? "Notifications · \(unread) new" : "Notifications") { [unowned self] in nav("notifications") }
-        icon("bell", bell.midX, bell.midY, 0xffffffff, 0.62)
+        let bh = sq("dock:notifications", bell, unread > 0 ? "Notifications · \(unread) new" : "Notifications", selected: view == "notifications") { [unowned self] in nav("notifications") }
+        icon("bell", bell.midX, bell.midY, bh ? 0xffffffff : 0xffffff99, 0.62)
         if settings.bool("dnd") { icon("moon", bell.maxX - 12, bell.minY + 12, 0xc8d0d6ff, 0.36) }
-        else if unread > 0 { rr(CGRect(x: bell.maxX - 16, y: bell.minY + 2, width: 16, height: 16), 8, 0x2d8cffff) }   // unread
-        if view == "notifications" { rr(CGRect(x: bell.midX - 12, y: d.maxY - 10, width: 24, height: 4), 2, 0xc8d0d6ff) }
+        else if unread > 0 {   // unread: badge blue with a ring in the dock colour
+            rr(CGRect(x: bell.maxX - 19, y: bell.minY - 1, width: 22, height: 22), 11, 0x2c3442ff); rr(CGRect(x: bell.maxX - 16, y: bell.minY + 2, width: 16, height: 16), 8, 0x1877f2ff)
+        }
         let find = m(CGRect(x: stX + pw + 82, y: d.midY - 28, width: 56, height: 56))
-        _ = sq("dock:search", find, "Search") { [unowned self] in searchText = ""; nav("keyboard") }
-        icon("search", find.midX, find.midY, 0xffffffff, 0.62)
-        if view == "keyboard" { rr(CGRect(x: find.midX - 12, y: d.maxY - 10, width: 24, height: 4), 2, 0xc8d0d6ff) }
+        let fh = sq("dock:search", find, "Search", selected: view == "keyboard") { [unowned self] in searchText = ""; nav("keyboard") }
+        icon("search", find.midX, find.midY, fh ? 0xffffffff : 0xffffff99, 0.62)
         // app tiles: lift on hover, sink on press
         var x = d.minX + 18 + 56 + 14 + pw + 14 + 56 + 12 + 56 + 40
-        func slot(_ id: String, _ label: String, _ draw: (CGRect) -> Void, _ fn: @escaping () -> Void, active: Bool) {
+        func slot(_ id: String, _ label: String, _ draw: (CGRect) -> Void, _ fn: @escaping () -> Void, active: Bool, running: Bool = false) {
             let r0 = m(CGRect(x: x, y: d.midY - tile / 2 - 3, width: tile, height: tile))
             let h = btn("dock:" + id, r0.insetBy(dx: -gap / 2, dy: -8), fn)
             let t = ease("dock:" + id, isPressed("dock:" + id) ? -1 : h ? 1 : 0, speed: 20), k: CGFloat = 1
             let r = CGRect(x: r0.midX - tile * k / 2, y: r0.midY - tile * k / 2, width: tile * k, height: tile * k)
             draw(r)
             if t > 0.02 { outline(r.insetBy(dx: -4, dy: -4), 21, 0xffffff00 | UInt32(192 * min(1, t)), 3) }
-            if active { rr(CGRect(x: r0.midX - 12, y: d.maxY - 10, width: 24, height: 4), 2, 0xc8d0d6ff) }
+            // Horizon: the selected destination gets a 56 x 4 dp bar along the dock's top edge (white 20% on hover)
+            if active || h { rr(CGRect(x: r0.midX - 36, y: d.minY, width: 72, height: 5), 2.5, active ? 0x024abeff : 0xffffff33) }
+            if running { rr(CGRect(x: r0.midX - 13, y: d.maxY - 11, width: 26, height: 5), 2.5, 0xffffff60) }   // a running app: small pill under it
             if h { tip = (r0, label) }
             x += tile + gap
         }
         for id in items {
             slot(id, Dashboard.apps[id]!.label, { [unowned self] r in
                 if id == "playing", let gm = playingGame { gameIcon(gm, r) } else { appIcon(id, r, hot: false) }
-            }, { [unowned self] in openApp(id) }, active: view == id)
+            }, { [unowned self] in openApp(id) }, active: view == id, running: id == "playing" && gameActive)
         }
         for g in favs {
             slot("game:" + g.appid, g.name + (isPinned(g.appid) ? "  ·  Pinned" : ""), { [unowned self] r in gameIcon(g, r) }, { [unowned self] in start(g) },
-                 active: gameActive && self.games.playing(gameName) == g)
+                 active: false, running: gameActive && self.games.playing(gameName) == g)
         }
         rr(m(CGRect(x: x + 2, y: d.minY + 24, width: 2, height: d.height - 48)), 1, 0xffffff2a); x += 22
         slot("library", "App Library", { [unowned self] r in rr(r, 18, 0x46525dff); icon("library", r.midX, r.midY, 0xffffffff, 0.85 * r.width / tile) },
@@ -1122,7 +1123,7 @@ final class Dashboard {
         if ta > 0.01, let (r, label) = lastTip {   // the name fades in above the hovered control
             let w = textW(label, 26) + 44, tt = CGRect(x: min(max(r.midX - w / 2, 20), CGFloat(Dashboard.W) - w - 20), y: d.minY - 58 + 8 * (1 - ta), width: w, height: 46)
             ctx.saveGState(); ctx.setAlpha(ta)
-            rr(tt, 12, 0x1c272ef2); txt(label, tt.midX, tt.midY + 9, 26, align: 0.5)
+            rr(tt, 16, 0x151515f2); txt(label, tt.midX, tt.midY + 9, 26, 0xf0f0f0ff, align: 0.5)
             ctx.restoreGState()
         }
         grabBar("grabdock", Dashboard.DOCKGRAB)
@@ -1456,14 +1457,20 @@ final class Dashboard {
                 guard r.maxY + 80 > area.minY, r.minY < area.maxY else { continue }
                 let h = live(r).map { btn("tile:" + g.appid, $0) { [unowned self] in start(g) } } ?? false
                 lifted("tile:" + g.appid, r, 18, hot: h || menuFor == g.appid) { [unowned self] big in
-                    cover(games.image(g.appid, "header"), big, g.name, rad: 18)
+                    let z = ease("zoom:" + g.appid, h ? 1 : 0, speed: h ? 1.2 : 6)   // Horizon: art drifts to 110% over 2.5 s while hovered
+                    cover(games.image(g.appid, "header"), big, g.name, rad: 18, zoom: 1 + 0.1 * z)
                     if !g.installed {   // owned but not installed: dimmed, with download state
                         rr(big, 18, 0x00000080)
                         let b = CGRect(x: big.midX - 38, y: big.midY - 38, width: 76, height: 76)
                         rr(b, 38, 0x000000b0)
                         if let p = g.progress {
                             let bar = CGRect(x: big.minX + 18, y: big.maxY - 28, width: big.width - 36, height: 12)
-                            rr(bar, 6, 0xffffff40); rr(CGRect(x: bar.minX, y: bar.minY, width: max(12, bar.width * CGFloat(p)), height: 12), 6, 0x2d8cffff)
+                            rr(bar, 6, 0xffffff40); let fill = CGRect(x: bar.minX, y: bar.minY, width: max(12, bar.width * CGFloat(p)), height: 12)
+                            rr(fill, 6, 0x1877f2ff)
+                            ctx.saveGState(); ctx.addPath(path(fill, 6)); ctx.clip()   // glare sweeping across every 1.25 s
+                            let gx = fill.minX - 160 + CGFloat(now.truncatingRemainder(dividingBy: 1.25) / 1.25) * (fill.width + 320)
+                            let gl = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB)!, colors: [col(0xffffff00), col(0xffffff80), col(0xffffff00)] as CFArray, locations: [0, 0.5, 1])!
+                            ctx.drawLinearGradient(gl, start: CGPoint(x: gx, y: 0), end: CGPoint(x: gx + 160, y: 0), options: []); ctx.restoreGState(); keepAnimating()
                             txt("\(Int(p * 100))%", b.midX, b.midY + 10, 26, bold: true, align: 0.5)
                         } else { icon("download", b.midX, b.midY, 0xffffffff, 1.2) }
                     }
@@ -1675,9 +1682,12 @@ final class Dashboard {
                 guard phase != 3 else { sounds.play("slider"); return }
                 set(min(1, max(0, Float((p.x - r.minX - r.height / 2) / (r.width - r.height))))); redraw()
             }
-            rr(r, r.height / 2, 0x34404aff)
+            rr(r, r.height / 2, 0xffffff1a)
             let kx = r.minX + CGFloat(value) * (r.width - r.height)
-            rr(CGRect(x: r.minX, y: r.minY, width: kx - r.minX + r.height, height: r.height), r.height / 2, 0x2a73f5ff)
+            let fill = CGRect(x: r.minX, y: r.minY, width: kx - r.minX + r.height, height: r.height)
+            ctx.saveGState(); ctx.addPath(path(fill, r.height / 2)); ctx.clip()   // Horizon seekbar: blue 40 -> 70, blue 20 -> 50 on hover
+            let grad = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB)!, colors: [col(hot ? 0xabdbffff : 0x4f9bfcff), col(hot ? 0x317cf2ff : 0x024abeff)] as CFArray, locations: [0, 1])!
+            ctx.drawLinearGradient(grad, start: CGPoint(x: fill.minX, y: 0), end: CGPoint(x: fill.maxX, y: 0), options: []); ctx.restoreGState()
             let g = ease("pill:" + id, hot ? 1 : 0, speed: 22) * 3
             let k = CGRect(x: kx + 5, y: r.minY + 5, width: r.height - 10, height: r.height - 10).insetBy(dx: -g, dy: -g)
             rr(k, k.height / 2, 0xffffffff)
@@ -1703,7 +1713,7 @@ final class Dashboard {
             let r = CGRect(x: c.minX + CGFloat(i % 3) * (tw + 20), y: c.minY + 270 + CGFloat(i / 3) * 200, width: tw, height: 180)
             let h = btn(id, r) { [unowned self] in fn(); redraw() }
             lifted(id, r, 26, hot: h, ring: false) { b in
-                rr(b, 26, on ? (h ? 0x4a88f7ff : 0x2a73f5ff) : h ? 0x56636fff : 0x46525dff)
+                rr(b, 26, on ? (h ? 0x3d8ef5ff : 0x1877f2ff) : h ? 0xffffff40 : 0xffffff1a)   // Horizon: secondary white 10% (+20% hover), on = primary
                 rr(CGRect(x: b.minX + 18, y: b.minY + 18, width: 60, height: 60), 30, on ? 0xffffff30 : 0x00000022)
                 icon(ic, b.minX + 48, b.minY + 48, 0xffffffff, 0.85)
                 txt(label, b.minX + 24, b.maxY - 50, 34, bold: true, maxW: b.width - 40)
@@ -2164,6 +2174,7 @@ final class Dashboard {
     }
 
     // MARK: Notifications: grouped by kind, timestamped, with actions and dismiss
+    private var noticeFilter = "All"
     private func drawNotifications() {
         let c = content
         let dnd = settings.bool("dnd")
@@ -2176,17 +2187,22 @@ final class Dashboard {
             let m = CGPoint(x: c.midX, y: c.midY - 30)
             rr(CGRect(x: m.x - 90, y: m.y - 90, width: 180, height: 180), 90, 0x34404aff)
             icon("bell", m.x, m.y, 0xa4adb4ff, 2.6)
-            txt("You're all caught up", c.midX, m.y + 150, 36, bold: true, align: 0.5)
-            txt(dnd ? "Do Not Disturb is on. New notifications collect here quietly." : "Downloads, game launches and connection news show up here.", c.midX, m.y + 196, 27, 0xa4adb4ff, align: 0.5)
+            txt("No new notifications", c.midX, m.y + 150, 36, bold: true, align: 0.5)
+            if dnd { txt("Do Not Disturb is on.", c.midX, m.y + 196, 27, 0xa4adb4ff, align: 0.5) }
             return
         }
         let ca = CGRect(x: c.maxX - 240, y: c.minY, width: 240, height: 60)
         face(ca, 30, on: btn("n:clear", ca) { [unowned self] in clearNotices() }, base: 0x34404aff, hot: 0x46525dff)
         icon("trash", ca.minX + 40, ca.midY, 0xffffffff, 0.65); txt("Clear All", ca.minX + 70, ca.midY + 10, 26, bold: true)
-        let area = CGRect(x: c.minX, y: c.minY + 84, width: c.width - 24, height: c.height - 84)
+        // Horizon-style category filter: All, then each group that has something
+        let kinds = ["All"] + Dashboard.noticeKinds.map(\.kind).filter { k in notices.contains { $0.kind == k } }
+        if !kinds.contains(noticeFilter) { noticeFilter = "All" }
+        segmented("n:filter", CGRect(x: c.minX, y: c.minY + 78, width: min(c.width, CGFloat(kinds.count) * 200), height: 60), kinds.map { k in k == "All" ? "All" : "\(k) (\(notices.filter { $0.kind == k }.count))" },
+                  kinds.firstIndex(of: noticeFilter) ?? 0) { [unowned self] i in noticeFilter = kinds[i]; flicks["notes"] = nil }
+        let area = CGRect(x: c.minX, y: c.minY + 160, width: c.width - 24, height: c.height - 160)
         let off = flicks["notes"]?.pos ?? 0
         var y = area.minY - off
-        let groups = Dashboard.noticeKinds.map { k in (k, notices.filter { $0.kind == k.kind }) }.filter { !$0.1.isEmpty }.sorted { $0.1[0].date > $1.1[0].date }
+        let groups = Dashboard.noticeKinds.filter { noticeFilter == "All" || $0.kind == noticeFilter }.map { k in (k, notices.filter { $0.kind == k.kind }) }.filter { !$0.1.isEmpty }.sorted { $0.1[0].date > $1.1[0].date }
         clipped(area.insetBy(dx: -8, dy: 0)) {
             for (k, items) in groups {
                 rr(CGRect(x: area.minX + 4, y: y + 8, width: 44, height: 44), 22, k.color)

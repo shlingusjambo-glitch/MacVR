@@ -120,7 +120,8 @@ final class UISounds {
 
     // MARK: synthesis (44.1 kHz stereo s16 WAV, volume/balance/mono in the mix)
     /// Quest-style restraint: hover and scroll ticks sit well under clicks; clicks under game audio.
-    private static let level: [String: Float] = ["hover": 0.3, "tick": 0.45, "tap": 0.7, "slider": 0.6]
+    private static let level: [String: Float] = ["hover": 0.18,   // Horizon: a barely-there 45 ms hover tick
+                                                     "tick": 0.45, "tap": 0.7, "slider": 0.6]
     private func shape(_ wav: Data, _ level: Float = 1) -> Data {
         let n = (wav.count - 44) / 4
         var out = Data(count: wav.count)
